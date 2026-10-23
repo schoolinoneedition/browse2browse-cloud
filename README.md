@@ -1,30 +1,37 @@
 # Browse2Browse Cloud
 
-Browse2Browse Cloud is a separate remote Chromium browser project. The static site is served by GitHub Pages and the browser engine is a Docker/Playwright service in `backend/`. It does not use the old Cloudflare Browser Run worker, so the old per-network daily browser cap is not used.
+A separate cloud browser project. The UI is published as a Render static site and the remote browser engine runs in a Docker/Playwright service in `backend/`. It does not use the old Cloudflare Browser Run service that hit its daily network quota.
 
-## Repository and site
+## Project links
 
-- Source: https://github.com/schoolinoneedition/browse2browse-cloud
-- Frontend URL after Pages deployment: https://schoolinoneedition.github.io/browse2browse-cloud/
-- Backend deployment blueprint: `render.yaml`, expected Render service name `browse2browse-cloud-backend`
+- Source repository: https://github.com/schoolinoneedition/browse2browse-cloud
+- Expected frontend URL after Render Blueprint deployment: https://browse2browse-cloud.onrender.com
+- Expected browser API: https://browse2browse-cloud-backend.onrender.com
+- Blueprint: `render.yaml`
 
-GitHub Pages cannot run Chromium. In Render, choose **New → Blueprint**, connect this repository, and deploy the service described by `render.yaml`. Confirm the backend's actual URL matches `apiBase` in `config.js`. Verify `https://YOUR-BACKEND/healthz` returns JSON containing `ok: true`, then test a public HTTPS website from the Pages site, including typing, clicking, scrolling, navigation and multiple tabs. A healthy endpoint alone does not prove destination websites load. Render Free sleeps when idle and has limited memory, so heavy websites may need a larger plan.
+## Deploy the app
 
-## XBT Supabase integration — separated by table name
+The repo now defines both the static website and the browser backend in one Render Blueprint. Open Render, select **New → Blueprint**, connect `schoolinoneedition/browse2browse-cloud`, and deploy. Render will create both resources from `render.yaml`. Confirm the final URLs in Render match `apiBase` in `config.js` and the backend's `ALLOWED_ORIGINS`. If Render assigns a different available subdomain, update those two settings in a follow-up commit.
 
-The app connects to the existing XBT Supabase project only for these newly created tables:
+Then open the backend's `/healthz` endpoint; it should return JSON with `ok: true`. Finally, test loading a public HTTPS site from the frontend, including typing, clicks, scrolling, back/forward and multiple tabs. A successful build or a healthy `/healthz` alone does not prove remote websites load correctly. Render's free backend can sleep when idle and has limited memory; heavier pages may require a larger plan.
+
+GitHub Actions validates JavaScript and configuration files. GitHub Pages publishing is intentionally not enabled by this workflow because this project's GitHub connection cannot enable Pages; Render Blueprint is the deployment path for both services.
+
+## XBT Supabase integration — separate tables only
+
+The existing XBT Supabase project is used for three new, isolated tables:
 
 - `public.browser2browse_preferences`
 - `public.browser2browse_bookmarks`
 - `public.browser2browse_history`
 
-Their SQL is in `supabase/migrations/20261023000000_browser2browse_tables.sql`. The migration has already been applied and verified. All three tables have row-level security enabled and four owner-only policies. Browse2Browse does not read or alter the XBT app's existing tables such as `enquiries`, `staff_roles` or `radar_leads`.
+The migration is `supabase/migrations/20261023000000_browser2browse_tables.sql`. It has already been applied and verified: all three tables have row-level security enabled and four owner-only policies each. Browse2Browse does not read or alter the existing XBT tables such as `enquiries`, `staff_roles` or `radar_leads`.
 
-The project URL and publishable key in `config.js` are public browser-client values. Never put a Supabase service-role or secret key in the frontend. In Supabase Auth settings, allow `https://schoolinoneedition.github.io/browse2browse-cloud/` as a redirect URL and enable email-link sign-in. If needed, expose only the three new prefixed tables through the Data API while keeping their RLS policies enabled.
+The project URL and publishable key in `config.js` are browser-safe values. Never place a Supabase service-role or secret key in frontend files. In Supabase Auth URL settings, allow `https://browse2browse-cloud.onrender.com/` as a redirect URL and enable email-link sign-in. If the tables are not exposed through the Data API, expose only the three new prefixed tables while keeping their RLS policies enabled.
 
-Only preferences, bookmarks and a limited recent URL list are synced. Temporary browser-session tokens, site cookies and page contents are not stored in Supabase.
+Only preferences, bookmarks and a limited recent URL list are synced. Temporary Chromium session tokens, site cookies and page contents are not stored in Supabase.
 
-## Local backend development
+## Local development
 
 Requires Node.js 22+ and a Docker/Playwright-compatible Chromium runtime.
 
@@ -39,7 +46,7 @@ Serve the root frontend from `http://localhost:5173` and set `apiBase` in `confi
 
 ## Security and limits
 
-- Only public HTTP/HTTPS destinations are accepted; private, loopback, link-local, local and metadata addresses are blocked using URL and DNS checks. Host-level network egress controls are still recommended.
-- Browser contexts are isolated and expire; cookies and site storage are temporary.
-- Some pop-ups, downloads, DRM, extension, media and permission flows may not work.
-- Respect website terms and administrator access policies. This is not designed to bypass access restrictions.
+- The backend accepts public HTTP/HTTPS destinations only and blocks private, loopback, link-local, local and metadata destinations with URL and DNS checks. Host-level network egress controls are still recommended.
+- Browser contexts are isolated and temporary; cookies and site storage are cleared when a session expires.
+- Some pop-ups, downloads, DRM, extensions, media and permission flows may not work.
+- Respect site terms and administrator access rules. This is not designed to bypass access restrictions.

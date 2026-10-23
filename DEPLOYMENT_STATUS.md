@@ -1,11 +1,14 @@
 # Deployment status
 
-- [x] Separate GitHub repository created: https://github.com/schoolinoneedition/browse2browse-cloud
-- [x] Browser frontend, Playwright backend, Dockerfile, Render blueprint and Pages workflow included in this repository.
-- [x] XBT Supabase project has the `browser2browse_preferences`, `browser2browse_bookmarks`, and `browser2browse_history` tables, each with RLS and owner-only policies.
-- [x] Local JavaScript syntax and JSON configuration checks passed before upload.
-- [ ] GitHub Pages workflow must finish; expected site URL: https://schoolinoneedition.github.io/browse2browse-cloud/
-- [ ] The Render backend must be deployed from `render.yaml`. Expected service URL is configured in `config.js`, but must be verified in the Render dashboard.
-- [ ] Verify `/healthz`, open a public HTTPS website, test real clicks/typing/scrolling, and confirm multi-tab navigation on the deployed backend.
+- [x] Separate source repository created and populated: https://github.com/schoolinoneedition/browse2browse-cloud
+- [x] Playwright/Chromium backend, Dockerfile, and Render Blueprint.
+- [x] Render Blueprint defines both static frontend and browser backend services.
+- [x] XBT Supabase isolated `browser2browse_*` tables created.
+- [x] Verified each table has RLS enabled and four owner-only policies.
+- [x] Frontend code uses only the three new prefixed Supabase tables.
+- [x] Local application syntax and configuration checks passed in GitHub Actions.
+- [ ] Deploy the Blueprint from Render to create the actual public website and backend.
+- [ ] Confirm actual Render subdomains match `config.js` and backend CORS configuration.
+- [ ] Test real website loading, mouse/keyboard input, navigation and multiple tabs against the deployed backend.
 
-Do not treat a successful static-site build or `/healthz` alone as proof that Chromium can load and interact with destination websites.
+A successful JavaScript/configuration check or `/healthz` endpoint is not proof that remote websites load and interact correctly.

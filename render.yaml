@@ -1,4 +1,19 @@
 services:
+  # Static UI, published by Render's CDN.
+  - type: web
+    name: browse2browse-cloud
+    runtime: static
+    buildCommand: mkdir -p _site && cp index.html app.js styles.css config.js favicon.svg manifest.webmanifest _site/
+    staticPublishPath: _site
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+
+  # Actual remote Chromium browser service (not an iframe/proxy-only UI).
   - type: web
     name: browse2browse-cloud-backend
     runtime: docker
@@ -16,4 +31,4 @@ services:
       - key: SESSION_TTL_MS
         value: "600000"
       - key: ALLOWED_ORIGINS
-        value: "https://schoolinoneedition.github.io,http://localhost:5173"
+        value: "https://browse2browse-cloud.onrender.com,https://schoolinoneedition.github.io,http://localhost:5173"
