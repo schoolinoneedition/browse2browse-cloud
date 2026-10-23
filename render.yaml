@@ -1,8 +1,7 @@
 services:
   # Static UI, published by Render's CDN.
-  - type: web
+  - type: static
     name: browse2browse-cloud
-    runtime: static
     buildCommand: mkdir -p _site && cp index.html app.js styles.css config.js favicon.svg manifest.webmanifest _site/
     staticPublishPath: _site
     headers:
