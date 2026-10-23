@@ -7,7 +7,7 @@
   <meta name="description" content="Browse2Browse Cloud — an isolated, interactive Chromium browser running remotely.">
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="manifest" href="./manifest.webmanifest">
-  <link rel="stylesheet" href="./styles.css?v=6">
+  <link rel="stylesheet" href="./styles.css?v=7">
   <title>Browse2Browse Cloud</title>
 </head>
 <body>
@@ -57,14 +57,16 @@
       <label class="setting-row"><span><strong>Default search engine</strong><small>Used when you enter a search query</small></span><select id="engine"><option value="duckduckgo">DuckDuckGo</option><option value="google">Google</option><option value="bing">Bing</option><option value="brave">Brave Search</option><option value="yahoo">Yahoo</option></select></label>
       <label class="setting-row"><span><strong>Homepage</strong><small>Used by the home button</small></span><input id="homepage" type="url" placeholder="https://example.com"></label>
       <label class="setting-row"><span><strong>Appearance</strong><small>Choose light or dark theme</small></span><select id="theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+      <label class="setting-row"><span><strong>Layout</strong><small>Choose a compact or comfortable toolbar</small></span><select id="layout"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
+      <label class="setting-row"><span><strong>Animations</strong><small>Reduce motion if you prefer</small></span><input id="animations" class="toggle" type="checkbox" checked></label>
       <section class="account-block"><h3>Account sync</h3><p id="syncStatus" class="sync-status">Sign in to sync bookmarks, recent history and preferences through the XBT Supabase project.</p><label for="syncEmail" class="field-label">Email address</label><input id="syncEmail" type="email" autocomplete="email" placeholder="you@example.com"><div class="sync-actions"><button id="syncSignIn" class="primary-button" type="button">Send sign-in link</button><button id="syncSignOut" class="secondary-button" type="button" hidden>Sign out</button></div></section>
       <section class="saved-block"><div class="saved-heading"><h3>Bookmarks</h3><span id="bookmarkCount">0</span></div><div id="bookmarksList" class="bookmarks-list"><p class="empty-state">No bookmarks saved yet.</p></div></section>
       <section class="saved-block"><div class="saved-heading"><h3>Recent sites</h3><button id="clearHistory" class="text-button" type="button">Clear</button></div><div id="historyList" class="history-list"><p class="empty-state">No recent sites yet.</p></div></section>
-      <div class="settings-foot"><p>Account data is stored in isolated <code>browser2browse_*</code> tables. Browser cookies and session tokens are never synced.</p><button id="clearSession" class="text-button danger" type="button">End remote session</button></div>
+      <div class="settings-foot"><p>Account data is stored in isolated <code>browser2browse_*</code> tables. Browser cookies and session tokens are never synced.</p><button id="clearSession" class="text-button danger" type="button">End remote session</button><button id="clearData" class="text-button danger" type="button">Clear local browser data</button></div>
     </aside>
   </main>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
   <script src="./config.js"></script>
-  <script src="./app.js?v=6" defer></script>
+  <script src="./app.js?v=7" defer></script>
 </body>
 </html>
