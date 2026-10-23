@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: browse2browse-cloud-backend
+    runtime: docker
+    rootDir: backend
+    plan: free
+    region: frankfurt
+    healthCheckPath: /healthz
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: MAX_SESSIONS
+        value: "1"
+      - key: MAX_TABS
+        value: "5"
+      - key: SESSION_TTL_MS
+        value: "600000"
+      - key: ALLOWED_ORIGINS
+        value: "https://schoolinoneedition.github.io,http://localhost:5173"

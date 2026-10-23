@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f5f6f8">
+  <meta name="description" content="Browse2Browse Cloud — an isolated, interactive Chromium browser running remotely.">
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="stylesheet" href="./styles.css?v=6">
+  <title>Browse2Browse Cloud</title>
+</head>
+<body>
+  <main class="browser" id="browser">
+    <header class="tabbar">
+      <div id="tabStrip" class="tabs" role="tablist" aria-label="Browser tabs"></div>
+      <button id="newTab" class="icon-button add-tab" type="button" title="New tab (Ctrl+T)" aria-label="New tab">+</button>
+      <span class="window-label">Browse2Browse Cloud</span>
+    </header>
+    <nav class="toolbar" aria-label="Browser controls">
+      <div class="nav-buttons">
+        <button id="back" class="icon-button" type="button" title="Back" aria-label="Back" disabled>←</button>
+        <button id="forward" class="icon-button" type="button" title="Forward" aria-label="Forward" disabled>→</button>
+        <button id="reload" class="icon-button" type="button" title="Refresh (Ctrl+R)" aria-label="Refresh">↻</button>
+        <button id="home" class="icon-button" type="button" title="New tab page" aria-label="New tab page">⌂</button>
+      </div>
+      <form id="addressForm" class="address-form" role="search">
+        <span class="address-symbol" aria-hidden="true">⌕</span>
+        <input id="address" type="text" autocomplete="off" spellcheck="false" aria-label="Search or enter website address" placeholder="Search or enter a website address">
+        <button id="clearAddress" type="button" class="clear-address" aria-label="Clear address" hidden>×</button>
+      </form>
+      <button id="bookmark" class="icon-button" type="button" title="Bookmark this page" aria-label="Bookmark this page" disabled>☆</button>
+      <button id="settingsToggle" class="icon-button" type="button" title="Settings and account" aria-label="Settings and account">⚙</button>
+      <button id="fullscreen" class="icon-button" type="button" title="Fullscreen" aria-label="Fullscreen">⛶</button>
+    </nav>
+    <div class="progress-track" aria-hidden="true"><div id="progress"></div></div>
+    <section id="viewport" class="viewport" aria-live="polite">
+      <section id="newtab" class="newtab">
+        <div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 40 40"><rect x="3" y="4" width="29" height="24" rx="6" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M9 12h16M9 17h8M21 24l4 4 8-9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <h1>Browse2Browse <span>Cloud</span></h1>
+        <p class="tagline">Your browser. Running in the cloud.</p>
+        <form id="welcomeForm" class="welcome-search">
+          <span aria-hidden="true">⌕</span>
+          <input id="welcomeInput" type="text" autocomplete="off" aria-label="Search or enter a website" placeholder="Search or enter a website address">
+          <select id="welcomeEngine" aria-label="Search engine"><option value="duckduckgo">DuckDuckGo</option><option value="google">Google</option><option value="bing">Bing</option><option value="brave">Brave Search</option><option value="yahoo">Yahoo</option></select>
+        </form>
+        <div class="recent-heading">RECENTLY VISITED</div>
+        <div id="recentSites" class="recent-sites"><p class="empty-state">Your recent sites will appear here.</p></div>
+        <p class="privacy-note">Remote Chromium · Temporary isolated sessions · Respect site and network access rules</p>
+      </section>
+      <img id="remoteView" alt="Interactive view of the remote browser. Click, type or scroll to interact." draggable="false" tabindex="0" hidden>
+      <div id="message" class="message" hidden></div>
+    </section>
+    <footer class="statusbar"><span id="statusText">Ready</span><span class="status-meta"><span id="connectionDot" class="status-dot"></span><span id="connectionText">Browser starts when you open a site</span></span></footer>
+    <aside id="settingsPanel" class="settings-panel" aria-label="Settings and account" hidden>
+      <div class="settings-header"><div><p class="eyebrow">BROWSE2BROWSE CLOUD</p><h2>Settings</h2></div><button id="closeSettings" class="icon-button" type="button" aria-label="Close settings">×</button></div>
+      <label class="setting-row"><span><strong>Default search engine</strong><small>Used when you enter a search query</small></span><select id="engine"><option value="duckduckgo">DuckDuckGo</option><option value="google">Google</option><option value="bing">Bing</option><option value="brave">Brave Search</option><option value="yahoo">Yahoo</option></select></label>
+      <label class="setting-row"><span><strong>Homepage</strong><small>Used by the home button</small></span><input id="homepage" type="url" placeholder="https://example.com"></label>
+      <label class="setting-row"><span><strong>Appearance</strong><small>Choose light or dark theme</small></span><select id="theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+      <section class="account-block"><h3>Account sync</h3><p id="syncStatus" class="sync-status">Sign in to sync bookmarks, recent history and preferences through the XBT Supabase project.</p><label for="syncEmail" class="field-label">Email address</label><input id="syncEmail" type="email" autocomplete="email" placeholder="you@example.com"><div class="sync-actions"><button id="syncSignIn" class="primary-button" type="button">Send sign-in link</button><button id="syncSignOut" class="secondary-button" type="button" hidden>Sign out</button></div></section>
+      <section class="saved-block"><div class="saved-heading"><h3>Bookmarks</h3><span id="bookmarkCount">0</span></div><div id="bookmarksList" class="bookmarks-list"><p class="empty-state">No bookmarks saved yet.</p></div></section>
+      <section class="saved-block"><div class="saved-heading"><h3>Recent sites</h3><button id="clearHistory" class="text-button" type="button">Clear</button></div><div id="historyList" class="history-list"><p class="empty-state">No recent sites yet.</p></div></section>
+      <div class="settings-foot"><p>Account data is stored in isolated <code>browser2browse_*</code> tables. Browser cookies and session tokens are never synced.</p><button id="clearSession" class="text-button danger" type="button">End remote session</button></div>
+    </aside>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
+  <script src="./config.js"></script>
+  <script src="./app.js?v=6" defer></script>
+</body>
+</html>
