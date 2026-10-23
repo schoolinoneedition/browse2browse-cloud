@@ -299,8 +299,21 @@ async function handleHttp(req, res) {
           await startStream(session, tab);
           return json(res, 200, { tab: snapshot(tab) });
         } catch (error) {
+          // Recovery path: some sites keep loading trackers or long-lived requests after
+          // the main document has already committed. Do not discard a usable page merely
+          // because DOMContentLoaded was slow.
+          const timedOut = /timeout/i.test(String(error?.message || error));
+          const reachedDestination = tab.page.url() === destination;
+          if (timedOut && reachedDestination && !tab.page.isClosed()) {
+            await tab.page.waitForLoadState('commit', { timeout: 2_000 }).catch(() => {});
+            tab.title = (await tab.page.title().catch(() => '')).slice(0, 300) || new URL(tab.page.url()).hostname;
+            await updateTab(tab, false).catch(() => {});
+            await startStream(session, tab);
+            log('navigation_recovered_after_timeout', { host: new URL(destination).hostname });
+            return json(res, 200, { tab: snapshot(tab), recovered: true });
+          }
           await updateTab(tab, false).catch(() => {});
-          const message = error.message.includes('Timeout') ? 'The site took too long to respond. Retry or choose another address.' : 'The remote browser could not load this website. Check the URL or try another site.';
+          const message = timedOut ? 'The site took too long to finish loading. The browser tried a recovery path; retry or choose another address.' : 'The remote browser could not load this website. Check the URL or try another site.';
           emit(session, { type: 'error', tabId: tab.id, message });
           throw Object.assign(new Error(message), { statusCode: 422 });
         }
