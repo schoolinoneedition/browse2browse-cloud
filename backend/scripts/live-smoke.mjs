@@ -125,9 +125,40 @@ async function openSocket(id, token) {
 }
 async function navigate(id, token, tabId, url) {
   const start = events.length;
-  const result = await apiRequest(`/api/session/${id}/navigate`, { method: 'POST', token, body: { url } });
-  assert(result.response.ok, `Navigation failed for ${url}: HTTP ${result.response.status} ${result.raw}`);
   const expected = new URL(url).href;
+  const retryDelays = [800, 1800, 3500];
+  let result = null;
+  let lastFailure = '';
+
+  // Render's free web service can briefly return its own 502 while waking or
+  // restarting. Retry only transient gateway/server failures, with a strict
+  // bound; bad URLs, ownership failures and other 4xx responses still fail.
+  for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+    try {
+      result = await apiRequest(`/api/session/${id}/navigate`, { method: 'POST', token, body: { url } });
+      if (result.response.ok) break;
+      lastFailure = `HTTP ${result.response.status} ${result.raw.slice(0, 240)}`;
+      if (![502, 503, 504].includes(result.response.status) || attempt === retryDelays.length) {
+        throw new Error(`Navigation failed for ${url}: ${lastFailure}`);
+      }
+    } catch (error) {
+      if (result?.response && ![502, 503, 504].includes(result.response.status)) throw error;
+      lastFailure = String(error?.message || error).slice(0, 320);
+      if (attempt === retryDelays.length) {
+        throw new Error(`Navigation failed for ${url} after ${attempt + 1} attempts: ${lastFailure}`);
+      }
+    }
+
+    const delay = retryDelays[attempt];
+    console.warn(`RETRY transient remote navigation failure for ${new URL(url).hostname} in ${delay}ms (attempt ${attempt + 2}/${retryDelays.length + 1}): ${lastFailure}`);
+    await sleep(delay);
+    // A readiness probe confirms whether the API is back; failures are allowed
+    // here because the next bounded navigation attempt is the actual test.
+    await get(api + '/health', 8_000).catch(() => null);
+    result = null;
+  }
+
+  assert(result?.response.ok, `Navigation failed for ${url}: ${lastFailure || 'no successful response'}`);
   await waitMessage(m => m.type === 'state' && m.tabId === tabId && m.url === expected, start, 25_000, `navigation state ${expected}`);
   // Frames may arrive before the HTTP navigation request returns; use the
   // cursor captured before navigation so the test never misses a valid keyframe.
