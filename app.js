@@ -377,12 +377,17 @@
   }
   async function reorder(from,to){if(!from||from===to)return;const i=tabs.findIndex(t=>t.id===from),j=tabs.findIndex(t=>t.id===to);if(i<0||j<0)return;const [x]=tabs.splice(i,1);tabs.splice(j,0,x);send({type:'reorder',ids:tabs.map(t=>t.id)});renderTabs()}
   function mapPointer(e){
-    const rect=view.getBoundingClientRect(),naturalWidth=view.naturalWidth||rect.width,naturalHeight=view.naturalHeight||rect.height;
-    if(!rect.width||!rect.height||!naturalWidth||!naturalHeight)return null;
-    // The image is stretched to fill the viewport, so scale X and Y independently.
-    const x=(e.clientX-rect.left)*naturalWidth/rect.width;
-    const y=(e.clientY-rect.top)*naturalHeight/rect.height;
-    return {x:Math.max(0,Math.min(naturalWidth-1,x)),y:Math.max(0,Math.min(naturalHeight-1,y)),inside:x>=0&&y>=0&&x<rect.width*naturalWidth/rect.width&&y<rect.height*naturalHeight/rect.height};
+    const rect=view.getBoundingClientRect(),viewportRect=$('viewport').getBoundingClientRect();
+    if(rect.width<1||rect.height<1||viewportRect.width<1||viewportRect.height<1)return null;
+    // CDP expects CSS viewport pixels, not compressed JPEG pixels. Map clicks to
+    // the real remote page dimensions even when the screencast image is downscaled.
+    const x=(e.clientX-rect.left)*viewportRect.width/rect.width;
+    const y=(e.clientY-rect.top)*viewportRect.height/rect.height;
+    return {
+      x:Math.max(0,Math.min(viewportRect.width-1,x)),
+      y:Math.max(0,Math.min(viewportRect.height-1,y)),
+      inside:x>=0&&y>=0&&x<viewportRect.width&&y<viewportRect.height
+    };
   }
   function inputFromPointer(e,type){
     if(!activeId)return;
