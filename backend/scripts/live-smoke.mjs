@@ -259,6 +259,8 @@ try {
     assert(homepage?.status() === 200, `Frontend homepage did not return HTTP 200: ${homepage?.status()}`);
     assert((await uiPage.title()).includes('Browse2Browse'), 'Frontend title was not rendered.');
     await uiPage.waitForFunction(() => document.querySelector('#statusText')?.textContent.includes('Connected'), null, { timeout: 60_000 });
+    const uiSessionDeadline = Date.now() + 5_000;
+    while ((!uiSession?.id || !uiSession?.token) && Date.now() <= uiSessionDeadline) await sleep(50);
     assert(uiSession?.id && uiSession?.token, 'Frontend did not create an authenticated remote browser session.');
     console.log('PASS real frontend JavaScript and auto-connect');
 
@@ -294,7 +296,9 @@ try {
     console.log('PASS address bar navigated through the actual frontend');
 
     await clickRemoteAt(90, 38);
+    await sleep(250);
     await uiPage.keyboard.type('b2b-ui-smoke');
+    await sleep(250);
     await clickRemoteAt(90, 88);
     await waitAddress('#interaction-b2b-ui-smoke');
     console.log('PASS frontend mouse and keyboard events control the remote page');
