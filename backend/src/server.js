@@ -462,10 +462,35 @@ wss.on('connection', (ws, req) => {
     try {
       const message = JSON.parse(raw.toString());
       if (!ws.authenticated) {
-        if (message.type !== 'auth' || !safeCompare(session.tokenHash, message.token)) { ws.close(4401, 'Invalid session token'); return; }
-        clearTimeout(timer); ws.authenticated = true; ws.session = session; session.peers.add(ws); session.lastSeen = Date.now();
-        ws.send(JSON.stringify({ type: 'ready', tabs: [...session.tabs.values()].map(snapshot), activeTabId: session.activeTabId }));
-        const tab = session.tabs.get(session.activeTabId); if (tab) await startStream(session, tab);
+        if (message.type !== 'auth' || !safeCompare(session.tokenHash, message.token)) {
+          ws.close(4401, 'Invalid session token');
+          return;
+        }
+        clearTimeout(timer);
+        ws.authenticated = true;
+        ws.session = session;
+        session.lastSeen = Date.now();
+        try {
+          const tab = session.tabs.get(session.activeTabId);
+          if (!tab) throw Object.assign(new Error('The browser session has no active tab.'), { statusCode: 503 });
+          // Do not tell the frontend that the viewer is ready until the native live
+          // screencast has actually started. No screenshot-only substitute is used.
+          await startStream(session, tab);
+          session.status = 'ready';
+          session.peers.add(ws);
+          ws.send(JSON.stringify({
+            type: 'ready',
+            status: session.status,
+            tabs: [...session.tabs.values()].map(snapshot),
+            activeTabId: session.activeTabId
+          }));
+        } catch (error) {
+          session.status = 'crashed';
+          log('viewer_connection_failed', { sessionId: session.id, error: String(error?.message || error).slice(0, 160) });
+          ws.send(JSON.stringify({ type: 'error', message: 'The real-time browser stream could not start. Please restart the browser session.' }));
+          await closeSession(session, 'Browser stream could not start');
+          if (ws.readyState === WebSocket.OPEN) ws.close(4408, 'Browser stream unavailable');
+        }
         return;
       }
       session.lastSeen = Date.now();
@@ -523,8 +548,18 @@ wss.on('connection', (ws, req) => {
       }
     } catch (error) { log('ws_input_error', { error: String(error.message || error).slice(0, 160) }); }
   });
-  ws.on('close', () => { clearTimeout(timer); session.peers.delete(ws); session.lastSeen = Date.now(); });
-  ws.on('error', () => { clearTimeout(timer); session.peers.delete(ws); });
+  ws.on('close', () => {
+    clearTimeout(timer);
+    session.peers.delete(ws);
+    session.lastSeen = Date.now();
+    if (!session.peers.size && session.status === 'ready') session.status = 'disconnected';
+  });
+  ws.on('error', () => {
+    clearTimeout(timer);
+    session.peers.delete(ws);
+    session.lastSeen = Date.now();
+    if (!session.peers.size && session.status === 'ready') session.status = 'disconnected';
+  });
 });
 
 const sweep = setInterval(async () => {
