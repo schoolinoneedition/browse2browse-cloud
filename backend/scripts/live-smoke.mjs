@@ -104,7 +104,7 @@ async function waitSessionUrl(id, token, suffix, timeout=timeoutMs) {
       const tab = (last.tabs || []).find(item => item.id === last.activeTabId);
       if (tab?.url?.includes(suffix)) return { state: last, tab };
     }
-    await sleep(100);
+    await sleep(250);
   }
   throw new Error(`Session did not reach ${suffix}; last state: ${JSON.stringify(last)}`);
 }
