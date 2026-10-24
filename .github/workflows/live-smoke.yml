@@ -1,0 +1,35 @@
+name: Verify deployed Browse2Browse browser
+
+on:
+  workflow_run:
+    workflows: ["Validate Browse2Browse Cloud"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-smoke:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install test dependencies
+        run: npm install --prefix backend --no-audit --no-fund
+      - name: Validate public smoke test
+        run: node --check backend/scripts/live-smoke.mjs
+      - name: Test the deployed Render browser end to end
+        run: node backend/scripts/live-smoke.mjs
+        env:
+          B2B_FRONTEND_URL: https://browse2browse-cloud.onrender.com
+          B2B_API_URL: https://browse2browse-cloud-backend.onrender.com
