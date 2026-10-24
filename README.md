@@ -15,7 +15,7 @@ The repo now defines both the static website and the browser backend in one Rend
 
 Then open the backend's `/healthz` endpoint; it should return JSON with `ok: true`. Finally, test loading a public HTTPS site from the frontend, including typing, clicks, scrolling, back/forward and multiple tabs. A successful build or a healthy `/healthz` alone does not prove remote websites load correctly. Render's free backend can sleep when idle and has limited memory; heavier pages may require a larger plan.
 
-GitHub Actions validates JavaScript and configuration files. GitHub Pages publishing is intentionally not enabled by this workflow because this project's GitHub connection cannot enable Pages; Render Blueprint is the deployment path for both services.
+GitHub Actions installs the backend dependencies, checks JavaScript syntax and configuration, and runs URL-policy regression tests. These automated checks do not prove a live Render browser session works end to end. GitHub Pages publishing is intentionally not enabled by this workflow because this project's GitHub connection cannot enable Pages; Render Blueprint is the deployment path for both services.
 
 ## XBT Supabase integration — separate tables only
 
@@ -48,5 +48,7 @@ Serve the root frontend from `http://localhost:5173` and set `apiBase` in `confi
 
 - The backend accepts public HTTP/HTTPS destinations only and blocks private, loopback, link-local, local and metadata destinations with URL and DNS checks. Host-level network egress controls are still recommended.
 - Browser contexts are isolated and temporary; cookies and site storage are cleared when a session expires.
+- The frontend retries backend cold starts and interrupted WebSocket connections automatically. Chromium startup tries the bundled headless runtime and a second Chromium launch mode; if CDP video frames fail or stop, the service falls back to JPEG page screenshots and Playwright input.
+- Navigation returns when the main document commits instead of waiting for every analytics or tracking request, so a slow resource is less likely to make the whole page look failed.
 - Some pop-ups, downloads, DRM, extensions, media and permission flows may not work.
 - Respect site terms and administrator access rules. This is not designed to bypass access restrictions.
