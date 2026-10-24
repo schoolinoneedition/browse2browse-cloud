@@ -1,11 +1,9 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
-import dns from 'node:dns/promises';
-import net from 'node:net';
 import { URL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
-import ipaddr from 'ipaddr.js';
 import { chromium } from 'playwright';
+import { validateUrl } from './url-policy.js';
 
 const PORT = Number(process.env.PORT || 10000);
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 10 * 60 * 1000);
@@ -46,41 +44,6 @@ function rateLimit(key, limit = 40, windowMs = 60_000) {
   item.count++;
   return item.count <= limit;
 }
-function isPublicIp(input) {
-  try {
-    let address = ipaddr.parse(input);
-    if (address.kind() === 'ipv6' && address.isIPv4MappedAddress()) address = address.toIPv4Address();
-    return address.range() === 'unicast';
-  } catch { return false; }
-}
-function hostShapeAllowed(host) {
-  const h = host.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
-  if (!h || h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal') ||
-      h.endsWith('.home.arpa') || h === 'metadata' || h === 'metadata.google.internal' || h === 'host.docker.internal' ||
-      h === 'instance-data' || h === 'kubernetes.default.svc') return false;
-  return true;
-}
-async function validateUrl(raw) {
-  let url;
-  try { url = new URL(String(raw)); } catch { throw new Error('Enter a valid website address.'); }
-  if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) {
-    throw new Error('Only public HTTP and HTTPS websites can be opened.');
-  }
-  if (!hostShapeAllowed(url.hostname)) throw new Error('Local and private network destinations are blocked.');
-  const host = url.hostname.replace(/^\[|\]$/g, '');
-  if (net.isIP(host)) {
-    if (!isPublicIp(host)) throw new Error('Local and private network destinations are blocked.');
-  } else {
-    let records;
-    try { records = await dns.lookup(host, { all: true, verbatim: true }); }
-    catch { throw new Error('The website hostname could not be resolved. Check the address and try again.'); }
-    if (!records.length || records.some(record => !isPublicIp(record.address))) {
-      throw new Error('This destination resolves to a private or non-public network address and was blocked.');
-    }
-  }
-  url.hash = url.hash; // Keep normal URL fragments, but ensure URL parsing has normalised the value.
-  return url.href;
-}
 async function readBody(req, maxBytes = 16_384) {
   let raw = '';
   for await (const chunk of req) {
@@ -92,8 +55,40 @@ async function readBody(req, maxBytes = 16_384) {
 }
 async function ensureBrowser() {
   if (!browserPromise) {
-    browserPromise = chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] })
-      .catch(error => { browserPromise = null; throw error; });
+    browserPromise = (async () => {
+      const args = ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'];
+      const attempts = [
+        { label: 'bundled Chromium headless shell', options: { headless: true, args } },
+        { label: 'Chromium new-headless channel', options: { headless: true, channel: 'chromium', args } }
+      ];
+      const executablePath = process.env.CHROMIUM_EXECUTABLE_PATH || process.env.CHROME_EXECUTABLE_PATH;
+      if (executablePath) attempts.unshift({
+        label: 'configured system browser',
+        options: { headless: true, executablePath, args }
+      });
+
+      const failures = [];
+      for (const attempt of attempts) {
+        try {
+          log('browser_launch_attempt', { strategy: attempt.label });
+          const browser = await chromium.launch({ ...attempt.options, timeout: 20_000 });
+          log('browser_launch_ready', { strategy: attempt.label });
+          browser.on('disconnected', () => {
+            log('browser_disconnected');
+            browserPromise = null;
+          });
+          return browser;
+        } catch (error) {
+          const detail = String(error?.message || error).slice(0, 220);
+          failures.push(`${attempt.label}: ${detail}`);
+          log('browser_launch_failed', { strategy: attempt.label, error: detail });
+        }
+      }
+      throw new Error(`Unable to start Chromium after ${attempts.length} launch strategies. ${failures.join(' | ')}`);
+    })().catch(error => {
+      browserPromise = null;
+      throw error;
+    });
   }
   return browserPromise;
 }
@@ -143,20 +138,32 @@ async function updateTab(tab, loading = undefined) {
   }
   emit(tab.session, stateOf(tab));
 }
+function finishNavigation(tab) {
+  if (tab.navigationTimer) clearTimeout(tab.navigationTimer);
+  tab.navigationTimer = null;
+  updateTab(tab, false).catch(() => {});
+}
 function attachNavigationEvents(tab) {
-  const refresh = () => { updateTab(tab, false).catch(() => {}); };
   tab.page.on('request', request => {
     if (request.isNavigationRequest() && request.frame() === tab.page.mainFrame()) {
+      if (tab.navigationTimer) clearTimeout(tab.navigationTimer);
       tab.loading = true;
+      // A site may never dispatch load when a tracker hangs. Keep the visible page usable.
+      tab.navigationTimer = setTimeout(() => finishNavigation(tab), 15_000);
+      tab.navigationTimer.unref?.();
       emit(tab.session, stateOf(tab));
     }
   });
-  // A main-frame navigation updates the displayed URL immediately; DOMContentLoaded/load
-  // mark it complete. Keep the existing loading value during redirects.
-  tab.page.on('framenavigated', frame => { if (frame === tab.page.mainFrame()) updateTab(tab, tab.loading).catch(() => {}); });
-  tab.page.on('domcontentloaded', refresh);
-  tab.page.on('load', refresh);
+  // Update the address as soon as the main frame changes, but don't require every
+  // resource or tracker to finish before considering a committed document usable.
+  tab.page.on('framenavigated', frame => {
+    if (frame === tab.page.mainFrame()) updateTab(tab, tab.loading).catch(() => {});
+  });
+  tab.page.on('domcontentloaded', () => finishNavigation(tab));
+  tab.page.on('load', () => finishNavigation(tab));
   tab.page.on('close', () => {
+    if (tab.navigationTimer) clearTimeout(tab.navigationTimer);
+    if (tab.screenshotTimer) clearInterval(tab.screenshotTimer);
     const session = tab.session;
     session.tabs.delete(tab.id);
     if (session.activeTabId === tab.id) {
@@ -169,7 +176,7 @@ function attachNavigationEvents(tab) {
 async function registerPage(session, page) {
   if ([...session.tabs.values()].some(tab => tab.page === page)) return [...session.tabs.values()].find(tab => tab.page === page);
   if (session.tabs.size >= MAX_TABS) { await page.close().catch(() => {}); return null; }
-  const tab = { id: crypto.randomUUID(), page, title: 'New tab', loading: false, canGoBack: false, canGoForward: false, cdp: null, session };
+  const tab = { id: crypto.randomUUID(), page, title: 'New tab', loading: false, canGoBack: false, canGoForward: false, cdp: null, session, navigationTimer: null, screenshotTimer: null, screenshotInFlight: false, lastCdpFrameAt: 0 };
   session.tabs.set(tab.id, tab);
   page.setDefaultNavigationTimeout(25_000);
   attachNavigationEvents(tab);
@@ -183,26 +190,63 @@ async function createTab(session) {
   return registerPage(session, page);
 }
 async function stopStream(tab) {
+  if (tab?.screenshotTimer) {
+    clearInterval(tab.screenshotTimer);
+    tab.screenshotTimer = null;
+  }
   if (tab?.cdp) await tab.cdp.send('Page.stopScreencast').catch(() => {});
+}
+function startScreenshotFallback(tab) {
+  if (tab.screenshotTimer) clearInterval(tab.screenshotTimer);
+  tab.screenshotTimer = setInterval(async () => {
+    if (tab.page.isClosed() || tab.session.activeTabId !== tab.id || tab.screenshotInFlight) return;
+    if (tab.lastCdpFrameAt && Date.now() - tab.lastCdpFrameAt < 2_500) return;
+    tab.screenshotInFlight = true;
+    try {
+      const image = await tab.page.screenshot({ type: 'jpeg', quality: 68, timeout: 5_000 });
+      const viewport = tab.page.viewportSize() || { width: 1280, height: 800 };
+      emit(tab.session, {
+        type: 'frame', tabId: tab.id, data: image.toString('base64'),
+        width: viewport.width, height: viewport.height, fallback: true
+      });
+    } catch (error) {
+      log('screenshot_fallback_failed', { tabId: tab.id, error: String(error?.message || error).slice(0, 140) });
+    } finally {
+      tab.screenshotInFlight = false;
+    }
+  }, 1_200);
+  tab.screenshotTimer.unref?.();
 }
 async function startStream(session, tab) {
   if (!tab || tab.page.isClosed()) return;
   const previous = session.tabs.get(session.activeTabId);
   if (previous && previous.id === tab.id && tab.cdp) {
+    startScreenshotFallback(tab);
     await updateTab(tab);
-    return; // The active page already has a live screencast.
+    return;
   }
   if (previous && previous.id !== tab.id) await stopStream(previous);
   session.activeTabId = tab.id;
-  if (!tab.cdp) {
-    tab.cdp = await session.context.newCDPSession(tab.page);
-    tab.cdp.on('Page.screencastFrame', async frame => {
-      if (session.activeTabId === tab.id) emit(session, { type: 'frame', tabId: tab.id, data: frame.data, width: frame.metadata?.deviceWidth, height: frame.metadata?.deviceHeight });
-      await tab.cdp.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {});
-    });
-    await tab.cdp.send('Page.enable');
+
+  try {
+    if (!tab.cdp) {
+      tab.cdp = await session.context.newCDPSession(tab.page);
+      tab.cdp.on('Page.screencastFrame', async frame => {
+        tab.lastCdpFrameAt = Date.now();
+        if (session.activeTabId === tab.id) {
+          emit(session, { type: 'frame', tabId: tab.id, data: frame.data, width: frame.metadata?.deviceWidth, height: frame.metadata?.deviceHeight });
+        }
+        await tab.cdp.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {});
+      });
+      await tab.cdp.send('Page.enable');
+    }
+    await tab.cdp.send('Page.startScreencast', { format: 'jpeg', quality: 72, maxWidth: 1600, maxHeight: 1000, everyNthFrame: 1 });
+  } catch (error) {
+    log('cdp_screencast_unavailable', { tabId: tab.id, error: String(error?.message || error).slice(0, 180) });
   }
-  await tab.cdp.send('Page.startScreencast', { format: 'jpeg', quality: 72, maxWidth: 1600, maxHeight: 1000, everyNthFrame: 1 }).catch(() => {});
+  // If CDP screencasting is unavailable or stops emitting, continue with real page
+  // screenshots instead of leaving the viewer on a permanent blank screen.
+  startScreenshotFallback(tab);
   await updateTab(tab);
 }
 async function createSession() {
@@ -217,7 +261,10 @@ async function createSession() {
   session.context.setDefaultTimeout(15_000);
   // Re-check every navigated request, including redirects and subresources, to reduce SSRF exposure.
   await session.context.route('**/*', async route => {
-    try { await validateUrl(route.request().url()); await route.continue(); }
+    const requested = route.request().url();
+    // Browser-generated resources such as data images and blob media are not network targets.
+    if (/^(about:|data:|blob:)/i.test(requested)) { await route.continue(); return; }
+    try { await validateUrl(requested); await route.continue(); }
     catch { await route.abort('blockedbyclient').catch(() => {}); }
   });
   if (typeof session.context.routeWebSocket === 'function') {
@@ -291,19 +338,21 @@ async function handleHttp(req, res) {
       if (operation === 'navigate' && req.method === 'POST') {
         const body = await readBody(req);
         const destination = await validateUrl(body.url);
+        const previousUrl = tab.page.url();
         tab.loading = true; emit(session, stateOf(tab));
         try {
-          await tab.page.goto(destination, { waitUntil: 'domcontentloaded', timeout: 25_000 });
+          // Commit-based navigation avoids waiting for slow analytics, ads or trackers.
+          await tab.page.goto(destination, { waitUntil: 'commit', timeout: 20_000 });
           tab.title = (await tab.page.title().catch(() => '')).slice(0, 300) || new URL(tab.page.url()).hostname;
           await updateTab(tab, false);
           await startStream(session, tab);
-          return json(res, 200, { tab: snapshot(tab) });
+          return json(res, 200, { tab: snapshot(tab), navigationStarted: true });
         } catch (error) {
           // Recovery path: some sites keep loading trackers or long-lived requests after
           // the main document has already committed. Do not discard a usable page merely
           // because DOMContentLoaded was slow.
           const timedOut = /timeout/i.test(String(error?.message || error));
-          const reachedDestination = tab.page.url() === destination;
+          const reachedDestination = tab.page.url() !== 'about:blank' && tab.page.url() !== previousUrl;
           if (timedOut && reachedDestination && !tab.page.isClosed()) {
             await tab.page.waitForLoadState('commit', { timeout: 2_000 }).catch(() => {});
             tab.title = (await tab.page.title().catch(() => '')).slice(0, 300) || new URL(tab.page.url()).hostname;
@@ -322,9 +371,9 @@ async function handleHttp(req, res) {
         await readBody(req);
         tab.loading = true; emit(session, stateOf(tab));
         try {
-          if (operation === 'back') await tab.page.goBack({ waitUntil: 'domcontentloaded', timeout: 20_000 });
-          if (operation === 'forward') await tab.page.goForward({ waitUntil: 'domcontentloaded', timeout: 20_000 });
-          if (operation === 'reload') await tab.page.reload({ waitUntil: 'domcontentloaded', timeout: 20_000 });
+          if (operation === 'back') await tab.page.goBack({ waitUntil: 'commit', timeout: 15_000 });
+          if (operation === 'forward') await tab.page.goForward({ waitUntil: 'commit', timeout: 15_000 });
+          if (operation === 'reload') await tab.page.reload({ waitUntil: 'commit', timeout: 15_000 });
         } catch {}
         await updateTab(tab, false);
         await startStream(session, tab);
