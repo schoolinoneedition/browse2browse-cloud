@@ -3,7 +3,7 @@
   const $ = id => document.getElementById(id);
   const engines = {duckduckgo:q=>`https://duckduckgo.com/?q=${q}`,google:q=>`https://www.google.com/search?q=${q}`,bing:q=>`https://www.bing.com/search?q=${q}`,brave:q=>`https://search.brave.com/search?q=${q}`,yahoo:q=>`https://search.yahoo.com/search?p=${q}`};
   const defaults={engine:'duckduckgo',homepage:'',theme:'system',layout:'comfortable',animations:true};
-  let prefs={...defaults,...read('b2b-settings',{})}, session=null, socket=null, tabs=[], activeId=null, retryTimer=null, retryCount=0, dragId=null, connectPromise=null, recoveryPromise=null;
+  let prefs={...defaults,...read('b2b-settings',{})}, session=null, socket=null, tabs=[], activeId=null, retryTimer=null, retryCount=0, dragId=null, connectPromise=null, recoveryPromise=null, resizeTimer=null;
   let bookmarks=read('b2b-bookmarks',[]), supabaseClient=null, cloudUser=null, cloudLastUserId=null, cloudSaveTimer=null, cloudHydrating=false;
   if(!Array.isArray(bookmarks))bookmarks=[];
   const api=(window.B2B_CONFIG?.apiBase||'').replace(/\/$/,'');
@@ -190,7 +190,8 @@
             if(m.type==='ready'){
               ready=true;clearTimeout(readyTimer);retryCount=0;
               tabs=m.tabs||[];activeId=m.activeTabId;render();
-              status('Connected to remote Chromium');setProgress(false);resolve();
+              status('Connected to remote Chromium');setProgress(false);
+              resizeRemoteViewport();resolve();
             }else if(m.type==='frame'){
               if(m.tabId===activeId){view.src=`data:image/jpeg;base64,${m.data}`;view.hidden=false;$('newtab').hidden=true;$('message').hidden=true}
             }else if(m.type==='state'){
@@ -231,6 +232,14 @@
   }
   function wsUrl(){const u=new URL(api||location.origin);u.protocol=u.protocol==='https:'?'wss:':'ws:';u.pathname='/stream';u.search='';if(session?.id)u.searchParams.set('sessionId',session.id);return u.href}
   function send(obj){if(socket?.readyState===WebSocket.OPEN)socket.send(JSON.stringify(obj))}
+  function resizeRemoteViewport(){
+    clearTimeout(resizeTimer);
+    resizeTimer=setTimeout(()=>{
+      const rect=$('viewport').getBoundingClientRect();
+      if(!activeId||socket?.readyState!==WebSocket.OPEN||rect.width<1||rect.height<1)return;
+      send({type:'resize',tabId:activeId,width:Math.round(rect.width),height:Math.round(rect.height)});
+    },120);
+  }
   function active(){return tabs.find(tab=>tab.id===activeId)||null}
   function renderTabs(){const strip=$('tabStrip');strip.replaceChildren();tabs.forEach(t=>{const b=document.createElement('button');b.className='tab'+(t.id===activeId?' active':'');b.draggable=true;b.role='tab';b.setAttribute('aria-selected',String(t.id===activeId));b.title=t.title||t.url||'New tab';b.innerHTML=`<span class="tab-favicon">${t.loading?'◌':'◉'}</span><span class="tab-label"></span><span class="tab-close" role="button" aria-label="Close tab" title="Close tab">×</span>`;b.querySelector('.tab-label').textContent=t.title||'New tab';b.onclick=e=>{if(e.target.closest('.tab-close'))closeTab(t.id);else activate(t.id)};b.ondragstart=()=>dragId=t.id;b.ondragover=e=>e.preventDefault();b.ondrop=e=>{e.preventDefault();reorder(dragId,t.id)};strip.append(b)});$('back').disabled=!active()?.canGoBack;$('forward').disabled=!active()?.canGoForward;$('stop').disabled=!active()?.loading;$('address').value=active()?.url||'';updateBookmarkButton();renderBookmarks()}
 
@@ -262,7 +271,7 @@
   function renderHome(){const recent=read('b2b-recent',[]).slice(0,6);$('newtab').innerHTML=`<div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 40 40"><rect x="3" y="4" width="29" height="24" rx="6" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M9 12h16M9 17h8M21 24l4 4 8-9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="9" r="1" fill="currentColor"/></svg></div><div class="brand-name">Browse2Browse</div><div class="brand-caption">A real Chromium browser, running remotely</div><form class="welcome-search" id="welcomeForm"><span class="search-icon">⌕</span><input id="welcomeInput" autocomplete="off" aria-label="Search or enter website address" placeholder="Search or enter a website address"><select id="welcomeEngine" class="engine-select" aria-label="Search engine"><option value="duckduckgo">DuckDuckGo</option><option value="google">Google</option><option value="bing">Bing</option><option value="brave">Brave</option><option value="yahoo">Yahoo</option></select></form><div class="section-label">RECENTLY VISITED</div><div class="recent-sites">${recent.length?recent.map((x,i)=>`<button class="site-shortcut" data-recent="${i}"><span class="site-icon">${esc((new URL(x.url).hostname[0]||'?').toUpperCase())}</span><span class="site-title">${esc(x.title||x.url)}</span><span class="site-url">${esc(new URL(x.url).hostname)}</span></button>`).join(''):'<div class="empty-recent">Recently visited websites will show up here.</div>'}</div><div class="newtab-bottom">Remote sessions are temporary and isolated · <strong>Made by Roy</strong></div>`;$('welcomeEngine').value=prefs.engine;$('welcomeEngine').onchange=e=>{prefs.engine=e.target.value;save()};$('welcomeForm').onsubmit=e=>{e.preventDefault();navigate($('welcomeInput').value)};$('newtab').querySelectorAll('[data-recent]').forEach(b=>b.onclick=()=>navigate(recent[+b.dataset.recent].url))}
   function render(){renderTabs();const t=active();const empty=!t?.url;$('newtab').hidden=!empty;view.hidden=empty;$('message').hidden=true;if(empty)renderHome();document.documentElement.classList.toggle('dark',prefs.theme==='dark'||(prefs.theme==='system'&&matchMedia('(prefers-color-scheme: dark)').matches));document.documentElement.classList.toggle('no-motion',!prefs.animations);$('browser').classList.toggle('compact',prefs.layout==='compact')}
   async function newTab(){if(!session){await connect();if(!session)return}try{const x=await request('/api/tabs',{url:''});tabs.push(x.tab);activeId=x.tab.id;send({type:'activate',tabId:activeId});render()}catch(e){statusError(e)}}
-  async function activate(id){activeId=id;send({type:'activate',tabId:id});render();setProgress(!!active()?.loading)}
+  async function activate(id){activeId=id;send({type:'activate',tabId:id});render();setProgress(!!active()?.loading);resizeRemoteViewport()}
   function shouldRecoverBrowser(error){
     return error?.status===401 || error?.status===502 ||
       (error?.status===503&&!/capacity/i.test(String(error?.message||''))) ||
@@ -335,8 +344,45 @@
     }
   }
   async function reorder(from,to){if(!from||from===to)return;const i=tabs.findIndex(t=>t.id===from),j=tabs.findIndex(t=>t.id===to);if(i<0||j<0)return;const [x]=tabs.splice(i,1);tabs.splice(j,0,x);send({type:'reorder',ids:tabs.map(t=>t.id)});renderTabs()}
-  function inputFromPointer(e,type){const r=view.getBoundingClientRect();if(!r.width||!r.height)return;send({type:'input',tabId:activeId,event:type,x:(e.clientX-r.left)*view.naturalWidth/r.width,y:(e.clientY-r.top)*view.naturalHeight/r.height,button:e.button})}
-  view.addEventListener('pointerdown',e=>{view.focus();inputFromPointer(e,'mousePressed')});view.addEventListener('pointerup',e=>inputFromPointer(e,'mouseReleased'));let pointerPending=false;view.addEventListener('pointermove',e=>{if(pointerPending)return;pointerPending=true;requestAnimationFrame(()=>{pointerPending=false;inputFromPointer(e,'mouseMoved')})});view.addEventListener('wheel',e=>{e.preventDefault();const r=view.getBoundingClientRect();send({type:'input',tabId:activeId,event:'wheel',x:(e.clientX-r.left)*view.naturalWidth/r.width,y:(e.clientY-r.top)*view.naturalHeight/r.height,deltaX:e.deltaX,deltaY:e.deltaY})},{passive:false});view.addEventListener('contextmenu',e=>e.preventDefault());view.tabIndex=0;
+  function mapPointer(e){
+    const rect=view.getBoundingClientRect(),naturalWidth=view.naturalWidth||rect.width,naturalHeight=view.naturalHeight||rect.height;
+    if(!rect.width||!rect.height||!naturalWidth||!naturalHeight)return null;
+    const scale=Math.min(rect.width/naturalWidth,rect.height/naturalHeight);
+    const renderedWidth=naturalWidth*scale,renderedHeight=naturalHeight*scale;
+    const offsetX=(rect.width-renderedWidth)/2,offsetY=(rect.height-renderedHeight)/2;
+    const x=(e.clientX-rect.left-offsetX)/scale,y=(e.clientY-rect.top-offsetY)/scale;
+    return {x:Math.max(0,Math.min(naturalWidth-1,x)),y:Math.max(0,Math.min(naturalHeight-1,y)),inside:x>=0&&y>=0&&x<naturalWidth&&y<naturalHeight};
+  }
+  function inputFromPointer(e,type){
+    if(!activeId)return;
+    const point=mapPointer(e);if(!point||(!point.inside&&type==='mousePressed'))return;
+    send({type:'input',tabId:activeId,event:type,x:Math.round(point.x),y:Math.round(point.y),button:e.button});
+  }
+  view.addEventListener('pointerdown',e=>{
+    const point=mapPointer(e);if(!point?.inside)return;
+    view.focus({preventScroll:true});
+    try{view.setPointerCapture(e.pointerId)}catch{}
+    inputFromPointer(e,'mousePressed');
+  });
+  view.addEventListener('pointerup',e=>inputFromPointer(e,'mouseReleased'));
+  view.addEventListener('pointercancel',e=>inputFromPointer(e,'mouseReleased'));
+  let pointerPending=false,pendingPointerEvent=null;
+  view.addEventListener('pointermove',e=>{
+    pendingPointerEvent=e;
+    if(pointerPending)return;
+    pointerPending=true;
+    requestAnimationFrame(()=>{
+      pointerPending=false;
+      const latest=pendingPointerEvent;pendingPointerEvent=null;
+      if(latest)inputFromPointer(latest,'mouseMoved');
+    });
+  });
+  view.addEventListener('wheel',e=>{
+    e.preventDefault();
+    const point=mapPointer(e);if(!point?.inside||!activeId)return;
+    send({type:'input',tabId:activeId,event:'wheel',x:Math.round(point.x),y:Math.round(point.y),deltaX:e.deltaX,deltaY:e.deltaY});
+  },{passive:false});
+  view.addEventListener('contextmenu',e=>e.preventDefault());view.tabIndex=0;
   view.style.touchAction='none';
   view.addEventListener('pointerdown',e=>{try{view.setPointerCapture(e.pointerId)}catch{}},{passive:true});
   view.addEventListener('keydown',e=>{
@@ -358,7 +404,9 @@
     if(socket?.readyState===WebSocket.OPEN&&session?.id)send({type:'ping',tabId:activeId});
   },20_000);
   window.addEventListener('beforeunload',()=>{clearInterval(keepAliveTimer);socket?.close()});
-  new ResizeObserver(entries=>{const r=entries[0]?.contentRect;if(r&&r.width>0&&r.height>0)send({type:'resize',tabId:activeId,width:Math.round(r.width),height:Math.round(r.height)})}).observe($('viewport'));
+  const viewportObserver=new ResizeObserver(()=>resizeRemoteViewport());
+  viewportObserver.observe($('viewport'));
+  window.addEventListener('resize',resizeRemoteViewport,{passive:true});
   renderHome();renderBookmarks();$('newtab').hidden=false;initSupabase();connect();
 })();
 
