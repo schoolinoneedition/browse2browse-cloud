@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import { chromium } from 'playwright';
 
 const frontend = (process.env.B2B_FRONTEND_URL || 'https://browse2browse-cloud.onrender.com').replace(/\/$/, '');
 const api = (process.env.B2B_API_URL || 'https://browse2browse-cloud-backend.onrender.com').replace(/\/$/, '');
@@ -229,6 +230,117 @@ try {
   sessionClosed = true;
   session = null;
   console.log('PASS session closed and cleaned up');
+
+  // Exercise the deployed web UI in a real local test browser, including its own
+  // WebSocket connection. This catches frontend wiring errors that API-only tests miss.
+  let uiBrowser;
+  let uiPage;
+  let uiSession = null;
+  const pageErrors = [];
+  const consoleErrors = [];
+  try {
+    uiBrowser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    uiPage = await uiBrowser.newPage({ viewport: { width: 1440, height: 1000 } });
+    uiPage.setDefaultTimeout(20_000);
+    uiPage.on('pageerror', error => pageErrors.push(String(error?.message || error)));
+    uiPage.on('console', message => {
+      if (message.type() === 'error') consoleErrors.push(message.text());
+    });
+    uiPage.on('response', async response => {
+      try {
+        const u = new URL(response.url());
+        if (u.pathname === '/api/sessions' && response.request().method() === 'POST' && response.ok()) {
+          uiSession = await response.json();
+        }
+      } catch {}
+    });
+
+    const homepage = await uiPage.goto(frontend + '/', { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    assert(homepage?.status() === 200, `Frontend homepage did not return HTTP 200: ${homepage?.status()}`);
+    assert((await uiPage.title()).includes('Browse2Browse'), 'Frontend title was not rendered.');
+    await uiPage.waitForFunction(() => document.querySelector('#statusText')?.textContent.includes('Connected'), null, { timeout: 60_000 });
+    assert(uiSession?.id && uiSession?.token, 'Frontend did not create an authenticated remote browser session.');
+    console.log('PASS real frontend JavaScript and auto-connect');
+
+    const waitAddress = async fragment => uiPage.waitForFunction(
+      expected => document.querySelector('#address')?.value.includes(expected),
+      fragment,
+      { timeout: 30_000 }
+    );
+    const waitViewerFrame = async () => uiPage.waitForFunction(() => {
+      const view = document.querySelector('#remoteView');
+      return view && !view.hidden && view.src.startsWith('data:image/jpeg;base64,') && view.naturalWidth > 0;
+    }, null, { timeout: 25_000 });
+    const navigateFromUI = async url => {
+      await uiPage.locator('#address').fill(url);
+      await uiPage.locator('#addressForm').press('Enter');
+      await waitAddress(new URL(url).pathname.split('/').pop() || new URL(url).hostname);
+      await waitViewerFrame();
+    };
+    const clickRemoteAt = async (remoteX, remoteY) => {
+      const metrics = await uiPage.locator('#remoteView').evaluate(element => {
+        const rect = element.getBoundingClientRect();
+        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, naturalWidth: element.naturalWidth, naturalHeight: element.naturalHeight };
+      });
+      assert(metrics.width > 0 && metrics.height > 0 && metrics.naturalWidth > 0 && metrics.naturalHeight > 0,
+        'The live remote browser image has no usable dimensions.');
+      await uiPage.mouse.click(
+        metrics.x + remoteX / metrics.naturalWidth * metrics.width,
+        metrics.y + remoteY / metrics.naturalHeight * metrics.height
+      );
+    };
+
+    await navigateFromUI(frontend + '/smoke-fixture.html');
+    console.log('PASS address bar navigated through the actual frontend');
+
+    await clickRemoteAt(90, 38);
+    await uiPage.keyboard.type('b2b-ui-smoke');
+    await clickRemoteAt(90, 88);
+    await waitAddress('#interaction-b2b-ui-smoke');
+    console.log('PASS frontend mouse and keyboard events control the remote page');
+
+    await clickRemoteAt(850, 500);
+    await uiPage.mouse.wheel(0, 1000);
+    await waitAddress('#scrolled-');
+    console.log('PASS frontend scrolling changes the remote page');
+
+    await navigateFromUI('https://example.com/');
+    await uiPage.locator('#back').click();
+    await waitAddress('#scrolled-');
+    await uiPage.locator('#forward').click();
+    await waitAddress('example.com');
+    await uiPage.locator('#reload').click();
+    await waitAddress('example.com');
+    await waitViewerFrame();
+    console.log('PASS frontend back, forward and reload controls');
+
+    // Return to the fixture, open a second tab using the UI and close it again.
+    await uiPage.locator('#back').click();
+    await waitAddress('smoke-fixture.html');
+    const priorTabs = await uiPage.locator('#tabStrip .tab').count();
+    await uiPage.locator('#newTab').click();
+    await uiPage.waitForFunction(count => document.querySelectorAll('#tabStrip .tab').length === count + 1, priorTabs);
+    await uiPage.locator('#address').fill('https://example.com/');
+    await uiPage.locator('#addressForm').press('Enter');
+    await waitAddress('example.com');
+    await uiPage.locator('#tabStrip .tab.active .tab-close').click();
+    await uiPage.waitForFunction(count => document.querySelectorAll('#tabStrip .tab').length === count, priorTabs);
+    await waitAddress('smoke-fixture.html');
+    console.log('PASS frontend new-tab and close-tab controls');
+
+    assert(pageErrors.length === 0, `Frontend JavaScript exceptions: ${pageErrors.join(' | ')}`);
+    assert(consoleErrors.length === 0, `Frontend console errors: ${consoleErrors.join(' | ')}`);
+    console.log('PASS frontend reports no JavaScript or console errors');
+  } finally {
+    await uiBrowser?.close().catch(() => {});
+    if (uiSession?.id && uiSession?.token) {
+      const uiClosed = await apiRequest(`/api/session/${uiSession.id}`, { method:'DELETE', token:uiSession.token, timeout:15_000 });
+      assert(uiClosed.response.ok && uiClosed.data.status === 'closed',
+        `Frontend-created session cleanup failed: HTTP ${uiClosed.response.status} ${uiClosed.raw}`);
+      console.log('PASS frontend-created browser session cleaned up');
+    }
+  }
+
   console.log('LIVE RENDER RESULT: PASS');
 } catch (error) {
   console.error('LIVE RENDER RESULT: FAIL');
