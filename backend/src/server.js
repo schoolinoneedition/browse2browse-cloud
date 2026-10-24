@@ -38,7 +38,7 @@ function cors(req, res) {
     res.setHeader('access-control-max-age', '600');
   }
 }
-function rateLimit(key, limit = 40, windowMs = 60_000) {
+function rateLimit(key, limit = 180, windowMs = 60_000) {
   const now = Date.now();
   let item = rateBuckets.get(key);
   if (!item || item.until <= now) { item = { count: 0, until: now + windowMs }; rateBuckets.set(key, item); }
