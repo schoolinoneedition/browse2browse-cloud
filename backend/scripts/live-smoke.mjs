@@ -42,33 +42,57 @@ async function waitMessage(predicate, from=0, timeout=timeoutMs, label='message'
   throw new Error(`Timed out waiting for ${label}; recent viewer events: ${JSON.stringify(events.slice(-8).map(x=>x?.type))}`);
 }
 async function waitForPublicServices() {
-  const end = Date.now() + 6 * 60_000;
+  // The free production service allows one browser session. A previous smoke run
+  // can leave a session alive until its idle TTL expires, and a real visitor may
+  // also be using it. Wait for genuine free capacity rather than opening a second
+  // session or reporting a misleading browser failure.
+  const end = Date.now() + 9 * 60_000;
   let last = {};
+  let servicesReady = false;
+
   while (Date.now() < end) {
     try {
-      const [home, fixture, liveness, health] = await Promise.all([
-        get(frontend + '/', 8_000),
-        get(frontend + '/smoke-fixture.html', 8_000),
-        get(api + '/healthz', 8_000),
-        get(api + '/health', 8_000)
-      ]);
-      const homeText = home.ok ? await home.text() : '';
-      const fixtureText = fixture.ok ? await fixture.text() : '';
+      if (!servicesReady) {
+        const [home, fixture, health] = await Promise.all([
+          get(frontend + '/', 8_000),
+          get(frontend + '/smoke-fixture.html', 8_000),
+          get(api + '/health', 8_000)
+        ]);
+        const homeText = home.ok ? await home.text() : '';
+        const fixtureText = fixture.ok ? await fixture.text() : '';
+        last = {
+          frontend: home.status,
+          fixture: fixture.status,
+          backendHealth: health.status
+        };
+        servicesReady = home.ok && homeText.includes('Browse2Browse Cloud') && homeText.includes('app.js?v=10')
+          && fixture.ok && fixtureText.includes('Remote Browser Test') && health.ok;
+        if (!servicesReady) {
+          await sleep(10_000);
+          continue;
+        }
+      }
+
+      const liveness = await get(api + '/healthz', 8_000);
+      const livenessData = liveness.ok ? await liveness.json().catch(() => null) : null;
+      const activeSessions = Number(livenessData?.activeSessions);
+      const maxSessions = Number(livenessData?.maxSessions);
       last = {
-        frontend: home.status,
-        fixture: fixture.status,
+        frontend: 'ready',
+        fixture: 'ready',
         backendLiveness: liveness.status,
-        backendHealth: health.status
+        activeSessions: Number.isFinite(activeSessions) ? activeSessions : 'unknown',
+        maxSessions: Number.isFinite(maxSessions) ? maxSessions : 'unknown'
       };
-      if (home.ok && homeText.includes('Browse2Browse Cloud') && homeText.includes('app.js?v=10')
-        && fixture.ok && fixtureText.includes('Remote Browser Test')
-        && liveness.ok && health.ok) return;
+      if (liveness.ok && Number.isFinite(activeSessions) && Number.isFinite(maxSessions)
+        && activeSessions < maxSessions) return;
     } catch (error) {
       last = { error: String(error?.message || error) };
+      servicesReady = false;
     }
     await sleep(10_000);
   }
-  throw new Error(`Public Render services did not become ready within six minutes: ${JSON.stringify(last)}`);
+  throw new Error(`Public Render services did not provide a free browser session within nine minutes: ${JSON.stringify(last)}`);
 }
 async function waitSessionUrl(id, token, suffix, timeout=timeoutMs) {
   const end = Date.now() + timeout;
