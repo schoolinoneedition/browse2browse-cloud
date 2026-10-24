@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: browse2browse-render-live-smoke
+  group: browse2browse-render-live-smoke-v15
   cancel-in-progress: false
 
 jobs:
