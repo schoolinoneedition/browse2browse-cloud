@@ -10,6 +10,9 @@
     #input{position:fixed;z-index:2;top:20px;left:20px;width:280px;height:38px;padding:8px 10px;border:1px solid #aeb9cf;border-radius:6px;background:#fff;font:16px Arial,sans-serif}
     #submit{position:fixed;z-index:2;top:72px;left:20px;width:140px;height:38px;border:0;border-radius:6px;background:#315cce;color:#fff;font:600 14px Arial,sans-serif;cursor:pointer}
     #result{position:fixed;z-index:2;top:124px;left:20px;font-size:14px;color:#1f513b}
+    #edge-input{position:fixed;z-index:2;top:20px;right:20px;width:280px;height:38px;padding:8px 10px;border:1px solid #aeb9cf;border-radius:6px;background:#fff;font:16px Arial,sans-serif}
+    #edge-submit{position:fixed;z-index:2;top:72px;right:20px;width:140px;height:38px;border:0;border-radius:6px;background:#315cce;color:#fff;font:600 14px Arial,sans-serif;cursor:pointer}
+    #edge-result{position:fixed;z-index:2;top:124px;right:20px;font-size:14px;color:#1f513b;text-align:right}
     #hint{position:fixed;z-index:1;top:160px;left:20px;font-size:12px;color:#657084}
     #long-page{height:3200px;padding:250px 20px 0}
     .marker{margin-top:1200px;padding:18px;background:#e4e9f4;border-radius:8px;max-width:440px}
@@ -19,6 +22,9 @@
   <input id="input" aria-label="Remote browser keyboard test" placeholder="Type b2b-smoke-here">
   <button id="submit" type="button">Verify interaction</button>
   <p id="result">Waiting for mouse and keyboard input.</p>
+  <input id="edge-input" aria-label="Right edge remote coordinate test" placeholder="Test the right side of the viewer">
+  <button id="edge-submit" type="button">Verify right edge</button>
+  <p id="edge-result">Right-edge input test is ready.</p>
   <p id="hint">This page is a tiny public fixture for automated remote-browser smoke tests.</p>
   <main id="long-page">
     <h1>Scroll test</h1>
@@ -33,6 +39,13 @@
       const value=input.value.trim();
       result.textContent='INTERACTION_OK:'+value;
       window.location.hash='interaction-'+encodeURIComponent(value);
+    });
+    const edgeInput=document.getElementById('edge-input');
+    const edgeResult=document.getElementById('edge-result');
+    document.getElementById('edge-submit').addEventListener('click',()=>{
+      const value=edgeInput.value.trim();
+      edgeResult.textContent='EDGE_INTERACTION_OK:'+value;
+      window.location.hash='edge-interaction-'+encodeURIComponent(value);
     });
     let scrollReported=false;
     window.addEventListener('scroll',()=>{
