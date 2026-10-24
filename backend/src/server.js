@@ -228,7 +228,7 @@ async function startStream(session, tab) {
     } catch {}
     try {
       await tab.cdp.send('Page.startScreencast', {
-        format: 'jpeg', quality: 60, maxWidth: 1600, maxHeight: 1000, everyNthFrame: 2
+        format: 'jpeg', quality: 60, maxWidth: 1920, maxHeight: 1200, everyNthFrame: 2
       });
       await updateTab(tab);
       await sendViewerKeyframe(session, tab);
@@ -254,7 +254,7 @@ async function startStream(session, tab) {
       await tab.cdp.send('Page.enable');
     }
     await tab.cdp.send('Page.startScreencast', {
-      format: 'jpeg', quality: 60, maxWidth: 1600, maxHeight: 1000, everyNthFrame: 2
+      format: 'jpeg', quality: 60, maxWidth: 1920, maxHeight: 1200, everyNthFrame: 2
     });
     await updateTab(tab);
     await sendViewerKeyframe(session, tab);
