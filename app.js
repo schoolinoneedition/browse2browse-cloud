@@ -2,12 +2,26 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const engines = {duckduckgo:q=>`https://duckduckgo.com/?q=${q}`,google:q=>`https://www.google.com/search?q=${q}`,bing:q=>`https://www.bing.com/search?q=${q}`,brave:q=>`https://search.brave.com/search?q=${q}`,yahoo:q=>`https://search.yahoo.com/search?p=${q}`};
-  const defaults={engine:'duckduckgo',homepage:'',theme:'system',layout:'comfortable',animations:true};
+  const defaults={engine:'duckduckgo',homepage:'',theme:'system',layout:'comfortable',animations:true,streamQuality:'auto'};
   let prefs={...defaults,...read('b2b-settings',{})}, session=null, socket=null, tabs=[], activeId=null, retryTimer=null, retryCount=0, dragId=null, connectPromise=null, recoveryPromise=null, resizeTimer=null, supabaseLoadPromise=null, supabaseInitPromise=null, pendingFrame=null, framePaintScheduled=false;
-  let bookmarks=read('b2b-bookmarks',[]), supabaseClient=null, cloudUser=null, cloudLastUserId=null, cloudSaveTimer=null, cloudHydrating=false;
+  let bookmarks=read('b2b-bookmarks',[]), supabaseClient=null, cloudUser=null, cloudLastUserId=null, cloudSaveTimer=null, cloudHydrating=false, recentlyClosedTab=null, activeStreamProfile='balanced';
   if(!Array.isArray(bookmarks))bookmarks=[];
   const api=(window.B2B_CONFIG?.apiBase||'').replace(/\/$/,'');
   const view=$('remoteView');
+  function preferredStreamProfile(){
+    const requested=['smooth','balanced','sharp'].includes(prefs.streamQuality)?prefs.streamQuality:'auto';
+    if(requested!=='auto')return requested;
+    const cores=Number(navigator.hardwareConcurrency||0);
+    const memory=Number(navigator.deviceMemory||0);
+    const connection=navigator.connection||navigator.mozConnection||navigator.webkitConnection;
+    const slowNetwork=!!connection?.saveData||['slow-2g','2g','3g'].includes(connection?.effectiveType);
+    return slowNetwork||(cores>0&&cores<=2)||(memory>0&&memory<=2)?'smooth':'balanced';
+  }
+  function applyStreamProfile(){
+    const profile=preferredStreamProfile();
+    if(socket?.readyState===WebSocket.OPEN)send({type:'streamProfile',profile,tabId:activeId});
+    return profile;
+  }
   function read(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}}
   function save(){
     try{
@@ -230,7 +244,7 @@
           const readyTimer=setTimeout(()=>{
             if(!ready){ws.close();reject(Error('The remote browser stream did not become ready in time.'))}
           },18_000);
-          ws.onopen=()=>{if(session)ws.send(JSON.stringify({type:'auth',token:session.token}))};
+          ws.onopen=()=>{if(session)ws.send(JSON.stringify({type:'auth',token:session.token,streamProfile:preferredStreamProfile()}))};
           ws.onerror=()=>{
             if(!ready){clearTimeout(readyTimer);ws.close();reject(Error('Could not open the remote browser stream.'))}
           };
@@ -238,7 +252,7 @@
             let m;try{m=JSON.parse(e.data)}catch{return}
             if(m.type==='ready'){
               ready=true;clearTimeout(readyTimer);retryCount=0;
-              tabs=m.tabs||[];activeId=m.activeTabId;render();
+              tabs=m.tabs||[];activeId=m.activeTabId;activeStreamProfile=m.streamProfile||preferredStreamProfile();render();
               status('Connected to remote Chromium');setProgress(false);
               resizeRemoteViewport();resolve();
             }else if(m.type==='frame'){
@@ -261,6 +275,8 @@
                   });
                 }
               }
+            }else if(m.type==='streamProfile'){
+              activeStreamProfile=m.profile||activeStreamProfile;
             }else if(m.type==='state'){
               const t=tabs.find(t=>t.id===m.tabId);
               if(t){Object.assign(t,m);renderTabs();if(m.tabId===activeId){$('address').value=m.url||'';status(m.loading?'Loading page…':'Connected');setProgress(m.loading);updateBookmarkButton();if(!m.loading)save()}}
@@ -419,8 +435,10 @@
     if(!id||!session)return;
     const previousUrl=active()?.url||'';
     try{
-      // The backend owns tab state. Close remotely first, then mirror its actual list.
+      // Keep a single restore slot for the keyboard's "reopen closed tab" shortcut.
+      const closing=tabs.find(tab=>tab.id===id);
       await request(`/api/tabs/${encodeURIComponent(id)}`,undefined,'DELETE');
+      if(closing?.url&&/^https?:\/\//i.test(closing.url))recentlyClosedTab={url:closing.url,title:closing.title||closing.url};
       const state=await request('/api/tabs',undefined,'GET');
       tabs=Array.isArray(state.tabs)?state.tabs:[];
       activeId=state.activeTabId||tabs[0]?.id||null;
@@ -435,8 +453,16 @@
   }
   async function go(action){
     const currentUrl=active()?.url||'';
-    try{await request(`/api/tabs/${encodeURIComponent(activeId)}/${action}`,{})}
-    catch(error){
+    if(!activeId||!session){status('Open a page first.');return}
+    const labels={back:'Going back…',forward:'Going forward…',reload:'Reloading page…',stop:'Stopping page load…'};
+    status(labels[action]||'Working…');
+    if(action==='stop')setProgress(false);else setProgress(true);
+    try{
+      await request(`/api/tabs/${encodeURIComponent(activeId)}/${action}`,{});
+      if(action==='stop'){setProgress(false);status('Page load stopped.')}
+      else{setProgress(false);status('Connected to remote Chromium')}
+    }catch(error){
+      setProgress(false);
       if(shouldRecoverBrowser(error)){
         try{await recoverSession(currentUrl)}catch(recoveryError){showRemoteError(recoveryError.message||error.message)}
       }else status(error.message)
@@ -469,16 +495,20 @@
   });
   view.addEventListener('pointerup',e=>inputFromPointer(e,'mouseReleased'));
   view.addEventListener('pointercancel',e=>inputFromPointer(e,'mouseReleased'));
-  let pointerPending=false,pendingPointerEvent=null;
+  let pointerPending=false,pendingPointerEvent=null,lastPointerSentAt=0;
+  const sendLatestPointerMove=()=>{
+    const latest=pendingPointerEvent;
+    if(!latest){pointerPending=false;return}
+    const delay=30-(performance.now()-lastPointerSentAt);
+    if(delay>0){setTimeout(sendLatestPointerMove,delay);return}
+    pendingPointerEvent=null;pointerPending=false;lastPointerSentAt=performance.now();
+    inputFromPointer(latest,'mouseMoved');
+  };
   view.addEventListener('pointermove',e=>{
     pendingPointerEvent=e;
     if(pointerPending)return;
     pointerPending=true;
-    requestAnimationFrame(()=>{
-      pointerPending=false;
-      const latest=pendingPointerEvent;pendingPointerEvent=null;
-      if(latest)inputFromPointer(latest,'mouseMoved');
-    });
+    requestAnimationFrame(sendLatestPointerMove);
   });
   view.addEventListener('wheel',e=>{
     e.preventDefault();
@@ -491,16 +521,47 @@
   view.addEventListener('keydown',e=>{
     const key=e.key.toLowerCase(),mod=e.ctrlKey||e.metaKey;
     // These shortcuts belong to the Browse2Browse UI, not the remote page.
-    if(mod&&['t','w','l','r'].includes(key))return;
+    if(mod&&['t','w','l','r','d','s'].includes(key)||e.key==='F5'||e.key==='F11')return;
     if(e.key==='Tab')e.preventDefault();
     send({type:'key',tabId:activeId,key:e.key,code:e.code,modifiers:{alt:e.altKey,ctrl:e.ctrlKey,meta:e.metaKey,shift:e.shiftKey}});
   });
   $('addressForm').onsubmit=e=>{e.preventDefault();navigate($('address').value)};$('clearAddress').onclick=()=>{$('address').value='';$('address').focus()};$('back').onclick=()=>go('back');$('forward').onclick=()=>go('forward');$('reload').onclick=()=>go('reload');$('stop').onclick=()=>go('stop');$('home').onclick=()=>prefs.homepage?navigate(prefs.homepage):(tabs.find(t=>!t.url)?activate(tabs.find(t=>!t.url).id):newTab());$('newTab').onclick=newTab;$('bookmark').onclick=toggleBookmark;
-  $('settingsToggle').onclick=()=>{$('settingsPanel').hidden=!$('settingsPanel').hidden;if(!$('settingsPanel').hidden)initSupabase()};$('closeSettings').onclick=()=>$('settingsPanel').hidden=true;$('fullscreen').onclick=async()=>{try{if(!document.fullscreenElement)await $('browser').requestFullscreen();else await document.exitFullscreen()}catch{status('Fullscreen is not available here')}};document.addEventListener('fullscreenchange',()=>$('fullscreen').title=document.fullscreenElement?'Exit fullscreen':'Fullscreen');
-  $('engine').value=prefs.engine;$('homepage').value=prefs.homepage;$('theme').value=prefs.theme;if($('layout'))$('layout').value=prefs.layout;if($('animations'))$('animations').checked=prefs.animations;$('engine').onchange=e=>{prefs.engine=e.target.value;save()};$('homepage').onchange=e=>{prefs.homepage=e.target.value.trim();save()};$('theme').onchange=e=>{prefs.theme=e.target.value;save();render()};if($('layout'))$('layout').onchange=e=>{prefs.layout=e.target.value;save();render()};if($('animations'))$('animations').onchange=e=>{prefs.animations=e.target.checked;save();render()};$('syncSignIn').onclick=signInToSync;$('syncSignOut').onclick=signOutOfSync;$('clearData').onclick=async()=>{if(confirm('Clear local preferences, recent sites, bookmarks, and the remote browser session?')){if(supabaseClient&&cloudUser){const cleared=await Promise.all([supabaseClient.from('browser2browse_bookmarks').delete().eq('user_id',cloudUser.id),supabaseClient.from('browser2browse_history').delete().eq('user_id',cloudUser.id)]);const failure=cleared.find(x=>x.error);if(failure)cloudStatus('Some XBT cloud history could not be cleared: '+failure.error.message)}localStorage.removeItem('b2b-settings');localStorage.removeItem('b2b-recent');localStorage.removeItem('b2b-bookmarks');bookmarks=[];if(session)await request('/api/sessions/'+session.id,undefined,'DELETE').catch(()=>{});if(socket)socket.onclose=null;socket?.close();socket=null;session=null;tabs=[];activeId=null;prefs={...defaults};save();render();renderBookmarks();connect()}};
+  $('settingsToggle').onclick=()=>{$('settingsPanel').hidden=!$('settingsPanel').hidden;if(!$('settingsPanel').hidden)initSupabase()};$('closeSettings').onclick=()=>$('settingsPanel').hidden=true;$('fullscreen').onclick=toggleFullscreen;document.addEventListener('fullscreenchange',()=>$('fullscreen').title=document.fullscreenElement?'Exit fullscreen':'Fullscreen');
+  $('engine').value=prefs.engine;$('homepage').value=prefs.homepage;$('theme').value=prefs.theme;if($('layout'))$('layout').value=prefs.layout;if($('animations'))$('animations').checked=prefs.animations;if($('streamQuality'))$('streamQuality').value=prefs.streamQuality||'auto';$('engine').onchange=e=>{prefs.engine=e.target.value;save()};$('homepage').onchange=e=>{prefs.homepage=e.target.value.trim();save()};$('theme').onchange=e=>{prefs.theme=e.target.value;save();render()};if($('layout'))$('layout').onchange=e=>{prefs.layout=e.target.value;save();render()};if($('animations'))$('animations').onchange=e=>{prefs.animations=e.target.checked;save();render()};if($('streamQuality'))$('streamQuality').onchange=e=>{prefs.streamQuality=e.target.value;save();const profile=applyStreamProfile();status('Stream profile: '+profile)};$('syncSignIn').onclick=signInToSync;$('syncSignOut').onclick=signOutOfSync;$('clearData').onclick=async()=>{if(confirm('Clear local preferences, recent sites, bookmarks, and the remote browser session?')){if(supabaseClient&&cloudUser){const cleared=await Promise.all([supabaseClient.from('browser2browse_bookmarks').delete().eq('user_id',cloudUser.id),supabaseClient.from('browser2browse_history').delete().eq('user_id',cloudUser.id)]);const failure=cleared.find(x=>x.error);if(failure)cloudStatus('Some XBT cloud history could not be cleared: '+failure.error.message)}localStorage.removeItem('b2b-settings');localStorage.removeItem('b2b-recent');localStorage.removeItem('b2b-bookmarks');bookmarks=[];if(session)await request('/api/sessions/'+session.id,undefined,'DELETE').catch(()=>{});if(socket)socket.onclose=null;socket?.close();socket=null;session=null;tabs=[];activeId=null;prefs={...defaults};save();render();renderBookmarks();connect()}};
   $('clearHistory').onclick=()=>{try{localStorage.setItem('b2b-recent','[]')}catch{};if(supabaseClient&&cloudUser)supabaseClient.from('browser2browse_history').delete().eq('user_id',cloudUser.id).then(({error})=>{if(error)cloudStatus('Local history cleared; cloud history could not be cleared: '+error.message)});renderHome();$('historyList').innerHTML='<p class="empty-state">No recent sites yet.</p>';save();status('Recent sites cleared.')};
   $('clearSession').onclick=async()=>{if(session){await request('/api/sessions/'+session.id,undefined,'DELETE').catch(()=>{});session=null}socket?.close();socket=null;tabs=[];activeId=null;render();status('Remote session ended.');connect()};
-  document.addEventListener('keydown',e=>{const mod=e.ctrlKey||e.metaKey;if(mod&&e.key.toLowerCase()==='t'){e.preventDefault();newTab()}else if(mod&&e.key.toLowerCase()==='w'){e.preventDefault();closeTab(activeId)}else if(mod&&e.key.toLowerCase()==='l'){e.preventDefault();$('address').focus();$('address').select()}else if(mod&&e.key.toLowerCase()==='r'){e.preventDefault();go('reload')}else if(e.altKey&&e.key==='ArrowLeft'){e.preventDefault();go('back')}else if(e.altKey&&e.key==='ArrowRight'){e.preventDefault();go('forward')}else if(e.key==='Escape'){if(!$('settingsPanel').hidden){$('settingsPanel').hidden=true}}else if(mod&&e.key==='Tab'){e.preventDefault();const i=tabs.findIndex(t=>t.id===activeId);activate(tabs[(i+(e.shiftKey?tabs.length-1:1))%tabs.length]?.id)}});
+  async function restoreClosedTab(){
+    if(!recentlyClosedTab){status('No recently closed website to restore.');return}
+    const restore=recentlyClosedTab;recentlyClosedTab=null;
+    await newTab();
+    if(active())await navigate(restore.url);
+  }
+  function toggleFullscreen(){
+    try{if(!document.fullscreenElement)$('browser').requestFullscreen();else document.exitFullscreen()}
+    catch{status('Fullscreen is not available here')}
+  }
+  document.addEventListener('keydown',e=>{
+    const mod=e.ctrlKey||e.metaKey,key=e.key.toLowerCase();
+    if(mod&&e.shiftKey&&key==='t'){e.preventDefault();restoreClosedTab()}
+    else if(mod&&key==='t'){e.preventDefault();newTab()}
+    else if(mod&&key==='w'){e.preventDefault();closeTab(activeId)}
+    else if(mod&&key==='d'){e.preventDefault();toggleBookmark()}
+    else if(mod&&key==='l'){e.preventDefault();$('address').focus();$('address').select()}
+    else if(mod&&key==='r'||e.key==='F5'){e.preventDefault();go('reload')}
+    else if(mod&&e.shiftKey&&key==='s'){e.preventDefault();$('settingsPanel').hidden=false;initSupabase()}
+    else if(e.key==='F11'){e.preventDefault();toggleFullscreen()}
+    else if(e.altKey&&e.key==='ArrowLeft'){e.preventDefault();go('back')}
+    else if(e.altKey&&e.key==='ArrowRight'){e.preventDefault();go('forward')}
+    else if(e.key==='Escape'){
+      if(!$('settingsPanel').hidden)$('settingsPanel').hidden=true;
+      else if(active()?.loading)go('stop');
+    }
+    else if(mod&&key==='tab'){
+      e.preventDefault();if(!tabs.length)return;
+      const i=tabs.findIndex(t=>t.id===activeId),direction=e.shiftKey?-1:1;
+      activate(tabs[(i+direction+tabs.length)%tabs.length]?.id);
+    }
+  });
   // Keep the active session alive while this tab remains open and usable.
   // Only a small ping is sent; page contents and credentials are not transmitted.
   const keepAliveTimer=setInterval(()=>{
