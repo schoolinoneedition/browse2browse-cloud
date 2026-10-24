@@ -3,7 +3,7 @@
   const $ = id => document.getElementById(id);
   const engines = {duckduckgo:q=>`https://duckduckgo.com/?q=${q}`,google:q=>`https://www.google.com/search?q=${q}`,bing:q=>`https://www.bing.com/search?q=${q}`,brave:q=>`https://search.brave.com/search?q=${q}`,yahoo:q=>`https://search.yahoo.com/search?p=${q}`};
   const defaults={engine:'duckduckgo',homepage:'',theme:'system',layout:'comfortable',animations:true};
-  let prefs={...defaults,...read('b2b-settings',{})}, session=null, socket=null, tabs=[], activeId=null, retryTimer=null, retryCount=0, dragId=null, connectPromise=null;
+  let prefs={...defaults,...read('b2b-settings',{})}, session=null, socket=null, tabs=[], activeId=null, retryTimer=null, retryCount=0, dragId=null, connectPromise=null, recoveryPromise=null;
   let bookmarks=read('b2b-bookmarks',[]), supabaseClient=null, cloudUser=null, cloudLastUserId=null, cloudSaveTimer=null, cloudHydrating=false;
   if(!Array.isArray(bookmarks))bookmarks=[];
   const api=(window.B2B_CONFIG?.apiBase||'').replace(/\/$/,'');
@@ -164,7 +164,7 @@
   function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
   function urlFor(raw){let s=raw.trim();if(!s)return {error:'Enter a website or search query.'};if(/\s/.test(s)||(!s.includes('.')&&!/^https?:\/\//i.test(s)))return {url:engines[prefs.engine](encodeURIComponent(s))};if(!/^https?:\/\//i.test(s))s='https://'+s;try{const u=new URL(s);if(!['http:','https:'].includes(u.protocol)||!u.hostname||u.username||u.password)return {error:'Enter a valid HTTP or HTTPS address.'};return {url:u.href}}catch{return {error:'That address is not valid. Check it and try again.'}}
   }
-  async function request(path,body,method='POST'){if(!api)throw Error('Remote browser service is not configured yet.');if(session&&path==='/api/tabs')path=`/api/sessions/${session.id}/tabs`;else if(session&&path.startsWith('/api/tabs/'))path=`/api/sessions/${session.id}${path.slice(4)}`;const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(new DOMException('Request timed out.','TimeoutError')),25_000);try{const r=await fetch(api+path,{method,headers:{'content-type':'application/json','authorization':session?`Bearer ${session.token}`:''},body:body===undefined?undefined:JSON.stringify(body),signal:controller.signal});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||`Service request failed (${r.status}).`);return j}catch(e){if(e?.name==='AbortError'||e?.name==='TimeoutError')throw Error('The cloud browser took too long to respond. Retrying automatically…');throw e}finally{clearTimeout(timeout)}}
+  async function request(path,body,method='POST'){if(!api)throw Error('Remote browser service is not configured yet.');if(session&&path==='/api/tabs')path=`/api/sessions/${session.id}/tabs`;else if(session&&path.startsWith('/api/tabs/'))path=`/api/sessions/${session.id}${path.slice(4)}`;const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(new DOMException('Request timed out.','TimeoutError')),25_000);try{const r=await fetch(api+path,{method,headers:{'content-type':'application/json','authorization':session?`Bearer ${session.token}`:''},body:body===undefined?undefined:JSON.stringify(body),signal:controller.signal});const j=await r.json().catch(()=>({}));if(!r.ok){const error=Error(j.error||`Service request failed (${r.status}).`);error.status=r.status;throw error}return j}catch(e){if(e?.name==='AbortError'||e?.name==='TimeoutError')throw Error('The cloud browser took too long to respond. Retrying automatically…');throw e}finally{clearTimeout(timeout)}}
   function statusError(e){$('newtab').hidden=true;view.hidden=true;$('message').hidden=false;$('message').innerHTML=`<div class="message-card"><div class="message-symbol">!</div><h2>Remote browser unavailable</h2><p>${esc(e.message||'The remote browser service could not be reached.')}</p><p class="host">${api?'The cloud browser could not connect. It may be starting, restarting, or offline, waking up, or not deployed yet.':'The cloud browser endpoint has not been configured yet.'}</p><div class="message-actions"><button class="primary-button" id="retryConnect">Try again</button><a class="secondary-button" href="https://github.com/schoolinoneedition/browse2browse-cloud" target="_blank" rel="noopener">Setup guide ↗</a></div></div>`;$('retryConnect').onclick=()=>{retryCount=0;connect()};status('Service unavailable');setProgress(false)}
   async function connect(){
     if(connectPromise)return connectPromise;
@@ -263,10 +263,77 @@
   function render(){renderTabs();const t=active();const empty=!t?.url;$('newtab').hidden=!empty;view.hidden=empty;$('message').hidden=true;if(empty)renderHome();document.documentElement.classList.toggle('dark',prefs.theme==='dark'||(prefs.theme==='system'&&matchMedia('(prefers-color-scheme: dark)').matches));document.documentElement.classList.toggle('no-motion',!prefs.animations);$('browser').classList.toggle('compact',prefs.layout==='compact')}
   async function newTab(){if(!session){await connect();if(!session)return}try{const x=await request('/api/tabs',{url:''});tabs.push(x.tab);activeId=x.tab.id;send({type:'activate',tabId:activeId});render()}catch(e){statusError(e)}}
   async function activate(id){activeId=id;send({type:'activate',tabId:id});render();setProgress(!!active()?.loading)}
-  async function navigate(raw){const out=urlFor(raw);if(out.error){showRemoteError(out.error);return}let t=active();if(!t){await newTab();t=active()}try{status('Loading page…');setProgress(true);$('message').hidden=true;await request(`/api/tabs/${encodeURIComponent(t.id)}/navigate`,{url:out.url});t.url=out.url;save();renderTabs()}catch(e){showRemoteError(e.message)}}
+  function shouldRecoverBrowser(error){
+    return error?.status===401 || error?.status===502 ||
+      (error?.status===503&&!/capacity/i.test(String(error?.message||''))) ||
+      /cloud browser took too long to respond/i.test(String(error?.message||''));
+  }
+  async function waitForBrowserReady(timeoutMs=60_000){
+    const end=Date.now()+timeoutMs;
+    while(Date.now()<end){
+      const ready=session&&socket?.readyState===WebSocket.OPEN&&active()&&
+        $('statusText').textContent.includes('Connected to remote Chromium');
+      if(ready)return;
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    throw Error('The remote browser did not recover in time. Please retry the address.');
+  }
+  async function recoverSession(targetUrl){
+    if(recoveryPromise)return recoveryPromise;
+    recoveryPromise=(async()=>{
+      clearTimeout(retryTimer);
+      const oldSession=session,oldSocket=socket;
+      status('Browser connection interrupted — creating a fresh session…');
+      setProgress(true);
+      if(oldSocket){
+        oldSocket.onclose=null;oldSocket.onerror=null;oldSocket.onmessage=null;
+        socket=null;
+        try{oldSocket.close()}catch{}
+      }
+      if(oldSession)await request(`/api/session/${oldSession.id}`,undefined,'DELETE').catch(()=>{});
+      session=null;tabs=[];activeId=null;retryCount=0;
+      await connect();
+      await waitForBrowserReady();
+      const tab=active();
+      if(!tab)throw Error('The restarted browser did not provide a tab.');
+      if(targetUrl&&/^https?:\/\//i.test(targetUrl)){
+        status('Restoring your page in the new browser…');
+        setProgress(true);
+        await request(`/api/tabs/${encodeURIComponent(tab.id)}/navigate`,{url:targetUrl});
+        tab.url=targetUrl;save();renderTabs();
+      }
+      status('Connected to remote Chromium');setProgress(false);
+    })();
+    try{return await recoveryPromise}finally{recoveryPromise=null}
+  }
+  async function navigate(raw){
+    const out=urlFor(raw);
+    if(out.error){showRemoteError(out.error);return}
+    let tab=active();
+    if(!tab){await newTab();tab=active()}
+    if(!tab){showRemoteError('The remote browser has not provided a usable tab yet.');return}
+    try{
+      status('Loading page…');setProgress(true);$('message').hidden=true;
+      await request(`/api/tabs/${encodeURIComponent(tab.id)}/navigate`,{url:out.url});
+      tab.url=out.url;save();renderTabs();
+    }catch(error){
+      if(shouldRecoverBrowser(error)){
+        try{await recoverSession(out.url);return}catch(recoveryError){showRemoteError(recoveryError.message||error.message);return}
+      }
+      showRemoteError(error.message);
+    }
+  }
   function showRemoteError(msg){$('message').hidden=false;view.hidden=true;$('newtab').hidden=true;$('message').innerHTML=`<div class="message-card"><div class="message-symbol">!</div><h2>Couldn’t load this page</h2><p>${esc(msg)}</p><div class="message-actions"><button class="primary-button" id="retryPage">Try again</button><button class="secondary-button" id="newTabFromError">New tab</button></div></div>`;$('retryPage').onclick=()=>navigate($('address').value);$('newTabFromError').onclick=newTab;setProgress(false)}
   async function closeTab(id){if(tabs.length<=1){try{await request(`/api/tabs/${encodeURIComponent(id)}`)}catch{}tabs=[];activeId=null;await newTab();return}try{await request(`/api/tabs/${encodeURIComponent(id)}`)}catch(e){status(e.message)}tabs=tabs.filter(t=>t.id!==id);if(activeId===id){activeId=tabs[Math.max(0,tabs.length-1)].id;send({type:'activate',tabId:activeId})}render()}
-  async function go(action){try{await request(`/api/tabs/${encodeURIComponent(activeId)}/${action}`,{})}catch(e){status(e.message)}}
+  async function go(action){
+    const currentUrl=active()?.url||'';
+    try{await request(`/api/tabs/${encodeURIComponent(activeId)}/${action}`,{})}
+    catch(error){
+      if(shouldRecoverBrowser(error)){
+        try{await recoverSession(currentUrl)}catch(recoveryError){showRemoteError(recoveryError.message||error.message)}
+      }else status(error.message)
+    }
+  }
   async function reorder(from,to){if(!from||from===to)return;const i=tabs.findIndex(t=>t.id===from),j=tabs.findIndex(t=>t.id===to);if(i<0||j<0)return;const [x]=tabs.splice(i,1);tabs.splice(j,0,x);send({type:'reorder',ids:tabs.map(t=>t.id)});renderTabs()}
   function inputFromPointer(e,type){const r=view.getBoundingClientRect();if(!r.width||!r.height)return;send({type:'input',tabId:activeId,event:type,x:(e.clientX-r.left)*view.naturalWidth/r.width,y:(e.clientY-r.top)*view.naturalHeight/r.height,button:e.button})}
   view.addEventListener('pointerdown',e=>{view.focus();inputFromPointer(e,'mousePressed')});view.addEventListener('pointerup',e=>inputFromPointer(e,'mouseReleased'));let pointerPending=false;view.addEventListener('pointermove',e=>{if(pointerPending)return;pointerPending=true;requestAnimationFrame(()=>{pointerPending=false;inputFromPointer(e,'mouseMoved')})});view.addEventListener('wheel',e=>{e.preventDefault();const r=view.getBoundingClientRect();send({type:'input',tabId:activeId,event:'wheel',x:(e.clientX-r.left)*view.naturalWidth/r.width,y:(e.clientY-r.top)*view.naturalHeight/r.height,deltaX:e.deltaX,deltaY:e.deltaY})},{passive:false});view.addEventListener('contextmenu',e=>e.preventDefault());view.tabIndex=0;
