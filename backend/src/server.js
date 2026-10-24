@@ -6,7 +6,7 @@ import { chromium } from 'playwright';
 import { validateUrl } from './url-policy.js';
 
 const PORT = Number(process.env.PORT || 10000);
-const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 10 * 60 * 1000);
+const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 30 * 60 * 1000);
 const MAX_SESSIONS = Math.max(1, Number(process.env.MAX_SESSIONS || 1));
 const MAX_TABS = Math.max(1, Number(process.env.MAX_TABS || 6));
 const allowedOrigins = new Set((process.env.ALLOWED_ORIGINS || 'http://localhost:5173,https://schoolinoneedition.github.io').split(',').map(x => x.trim()).filter(Boolean));
@@ -228,7 +228,7 @@ async function startStream(session, tab) {
     } catch {}
     try {
       await tab.cdp.send('Page.startScreencast', {
-        format: 'jpeg', quality: 64, maxWidth: 1280, maxHeight: 800, everyNthFrame: 2
+        format: 'jpeg', quality: 58, maxWidth: 1280, maxHeight: 800, everyNthFrame: 3
       });
       await updateTab(tab);
       await sendViewerKeyframe(session, tab);
@@ -254,7 +254,7 @@ async function startStream(session, tab) {
       await tab.cdp.send('Page.enable');
     }
     await tab.cdp.send('Page.startScreencast', {
-      format: 'jpeg', quality: 64, maxWidth: 1280, maxHeight: 800, everyNthFrame: 2
+      format: 'jpeg', quality: 58, maxWidth: 1280, maxHeight: 800, everyNthFrame: 3
     });
     await updateTab(tab);
     await sendViewerKeyframe(session, tab);
