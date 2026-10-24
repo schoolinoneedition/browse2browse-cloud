@@ -385,6 +385,16 @@ try {
     assert(uiSession?.id && uiSession?.token, 'Frontend did not create an authenticated remote browser session.');
     console.log('PASS real frontend JavaScript and auto-connect');
 
+    const startupSurface = await uiPage.evaluate(() => ({
+      welcomeVisible:!document.querySelector('#newtab')?.hidden,
+      welcomeSearchVisible:!!document.querySelector('#welcomeForm') && document.querySelector('#welcomeForm').getClientRects().length > 0,
+      remoteViewerVisible:!document.querySelector('#remoteView')?.hidden,
+      status:document.querySelector('#statusText')?.textContent || ''
+    }));
+    assert(startupSurface.welcomeVisible && startupSurface.welcomeSearchVisible && !startupSurface.remoteViewerVisible,
+      `Fresh browser session showed a blank remote page instead of the welcome screen: ${JSON.stringify(startupSurface)}`);
+    console.log('PASS fresh blank tab retains visible welcome and search screen');
+
     const waitAddress = async fragment => uiPage.waitForFunction(
       expected => document.querySelector('#address')?.value.includes(expected),
       fragment,
