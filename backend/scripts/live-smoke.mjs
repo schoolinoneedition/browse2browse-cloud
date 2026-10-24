@@ -399,17 +399,31 @@ try {
     const clickRemoteAt = async (remoteX, remoteY) => {
       const metrics = await uiPage.locator('#remoteView').evaluate(element => {
         const rect = element.getBoundingClientRect();
-        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, naturalWidth: element.naturalWidth, naturalHeight: element.naturalHeight };
+        const viewport = document.querySelector('#viewport').getBoundingClientRect();
+        return { x:rect.x,y:rect.y,width:rect.width,height:rect.height,
+          viewportWidth:viewport.width,viewportHeight:viewport.height,
+          naturalWidth:element.naturalWidth,naturalHeight:element.naturalHeight };
       });
       assert(metrics.width > 0 && metrics.height > 0 && metrics.naturalWidth > 0 && metrics.naturalHeight > 0,
         'The live remote browser image has no usable dimensions.');
+      // Click page CSS coordinates. The encoded frame may be downscaled, so its
+      // natural pixel dimensions must not be used as the input coordinate system.
       await uiPage.mouse.click(
-        metrics.x + remoteX / metrics.naturalWidth * metrics.width,
-        metrics.y + remoteY / metrics.naturalHeight * metrics.height
+        metrics.x + remoteX / metrics.viewportWidth * metrics.width,
+        metrics.y + remoteY / metrics.viewportHeight * metrics.height
       );
     };
 
+    // Exercise a wide Windows viewport while the remote stream is downscaled/
+    // re-encoded, then prove the remote image and input coordinates still align.
+    await uiPage.setViewportSize({ width: 1920, height: 1080 });
+    await sleep(500);
     await navigateFromUI(frontend + '/smoke-fixture.html');
+    await uiPage.waitForFunction(() => {
+      const view = document.querySelector('#remoteView');
+      return view && view.naturalWidth >= 1800 && view.naturalHeight > 0;
+    }, null, { timeout: 20_000 });
+    console.log('PASS remote stream remains full-width at a 1920px viewport');
     console.log('PASS address bar navigated through the actual frontend');
 
     await clickRemoteAt(90, 38);
@@ -425,6 +439,8 @@ try {
     await waitSessionUrl(uiSession.id, uiSession.token, '#scrolled-');
     console.log('PASS frontend scrolling changes the remote page');
 
+    await uiPage.setViewportSize({ width:1366,height:768 });
+    await sleep(350);
     await navigateFromUI('https://example.com/');
     await uiPage.locator('#back').click();
     await waitSessionUrl(uiSession.id, uiSession.token, '#scrolled-');
