@@ -75,8 +75,13 @@ async function ensureBrowser() {
           const browser = await chromium.launch({ ...attempt.options, timeout: 20_000 });
           log('browser_launch_ready', { strategy: attempt.label });
           browser.on('disconnected', () => {
-            log('browser_disconnected');
-            browserPromise = null;
+            log('browser_crashed');
+            if (browserPromise === browser) browserPromise = null;
+            for (const session of [...sessions.values()]) {
+              session.status = 'crashed';
+              emit(session, { type: 'error', message: 'The remote browser process stopped. A new session is required.' });
+              closeSession(session, 'Browser process crashed').catch(error => log('session_cleanup_error', { error: String(error?.message || error).slice(0, 160) }));
+            }
           });
           return browser;
         } catch (error) {
@@ -177,7 +182,7 @@ function attachNavigationEvents(tab) {
 async function registerPage(session, page) {
   if ([...session.tabs.values()].some(tab => tab.page === page)) return [...session.tabs.values()].find(tab => tab.page === page);
   if (session.tabs.size >= MAX_TABS) { await page.close().catch(() => {}); return null; }
-  const tab = { id: crypto.randomUUID(), page, title: 'New tab', loading: false, canGoBack: false, canGoForward: false, cdp: null, session, navigationTimer: null, screenshotTimer: null, screenshotInFlight: false, lastCdpFrameAt: 0 };
+  const tab = { id: crypto.randomUUID(), page, title: 'New tab', loading: false, canGoBack: false, canGoForward: false, cdp: null, session, navigationTimer: null };
   session.tabs.set(tab.id, tab);
   page.setDefaultNavigationTimeout(25_000);
   attachNavigationEvents(tab);
@@ -191,38 +196,14 @@ async function createTab(session) {
   return registerPage(session, page);
 }
 async function stopStream(tab) {
-  if (tab?.screenshotTimer) {
-    clearInterval(tab.screenshotTimer);
-    tab.screenshotTimer = null;
-  }
   if (tab?.cdp) await tab.cdp.send('Page.stopScreencast').catch(() => {});
 }
-function startScreenshotFallback(tab) {
-  if (tab.screenshotTimer) clearInterval(tab.screenshotTimer);
-  tab.screenshotTimer = setInterval(async () => {
-    if (tab.page.isClosed() || tab.session.activeTabId !== tab.id || tab.screenshotInFlight) return;
-    if (tab.lastCdpFrameAt && Date.now() - tab.lastCdpFrameAt < 2_500) return;
-    tab.screenshotInFlight = true;
-    try {
-      const image = await tab.page.screenshot({ type: 'jpeg', quality: 68, timeout: 5_000 });
-      const viewport = tab.page.viewportSize() || { width: 1280, height: 800 };
-      emit(tab.session, {
-        type: 'frame', tabId: tab.id, data: image.toString('base64'),
-        width: viewport.width, height: viewport.height, fallback: true
-      });
-    } catch (error) {
-      log('screenshot_fallback_failed', { tabId: tab.id, error: String(error?.message || error).slice(0, 140) });
-    } finally {
-      tab.screenshotInFlight = false;
-    }
-  }, 1_200);
-  tab.screenshotTimer.unref?.();
-}
 async function startStream(session, tab) {
-  if (!tab || tab.page.isClosed()) return;
+  if (!tab || tab.page.isClosed()) {
+    throw Object.assign(new Error('The browser tab is no longer available.'), { statusCode: 503 });
+  }
   const previous = session.tabs.get(session.activeTabId);
   if (previous && previous.id === tab.id && tab.cdp) {
-    startScreenshotFallback(tab);
     await updateTab(tab);
     return;
   }
@@ -233,7 +214,6 @@ async function startStream(session, tab) {
     if (!tab.cdp) {
       tab.cdp = await session.context.newCDPSession(tab.page);
       tab.cdp.on('Page.screencastFrame', async frame => {
-        tab.lastCdpFrameAt = Date.now();
         if (session.activeTabId === tab.id) {
           emit(session, { type: 'frame', tabId: tab.id, data: frame.data, width: frame.metadata?.deviceWidth, height: frame.metadata?.deviceHeight });
         }
@@ -241,14 +221,32 @@ async function startStream(session, tab) {
       });
       await tab.cdp.send('Page.enable');
     }
-    await tab.cdp.send('Page.startScreencast', { format: 'jpeg', quality: 72, maxWidth: 1600, maxHeight: 1000, everyNthFrame: 1 });
+    await tab.cdp.send('Page.startScreencast', {
+      format: 'jpeg', quality: 72, maxWidth: 1600, maxHeight: 1000, everyNthFrame: 1
+    });
+    await updateTab(tab);
   } catch (error) {
-    log('cdp_screencast_unavailable', { tabId: tab.id, error: String(error?.message || error).slice(0, 180) });
+    log('browser_stream_start_failed', { tabId: tab.id, error: String(error?.message || error).slice(0, 180) });
+    throw Object.assign(new Error('The live browser stream could not be started. Restart the session and try again.'), { statusCode: 503 });
   }
-  // If CDP screencasting is unavailable or stops emitting, continue with real page
-  // screenshots instead of leaving the viewer on a permanent blank screen.
-  startScreenshotFallback(tab);
-  await updateTab(tab);
+}
+async function installNetworkPolicy(context) {
+  // Re-check network requests, including redirects and subresources. Public-IP checks
+  // are defense in depth; host-level egress controls are still recommended.
+  await context.route('**/*', async route => {
+    const requested = route.request().url();
+    if (/^(about:|data:|blob:)/i.test(requested)) { await route.continue(); return; }
+    try { await validateUrl(requested); await route.continue(); }
+    catch { await route.abort('blockedbyclient').catch(() => {}); }
+  });
+  if (typeof context.routeWebSocket === 'function') {
+    await context.routeWebSocket('**/*', async route => {
+      try {
+        const checked = route.url().replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
+        await validateUrl(checked); await route.connect();
+      } catch { route.close({ code: 1008, reason: 'Blocked by network policy' }); }
+    });
+  }
 }
 async function createSession() {
   if (sessions.size + pendingSessionCreates >= MAX_SESSIONS) {
@@ -262,28 +260,14 @@ async function createSession() {
     const token = crypto.randomBytes(32).toString('base64url');
     session = {
       id: crypto.randomUUID(), tokenHash: hashToken(token), createdAt: Date.now(), lastSeen: Date.now(),
-      context: null, tabs: new Map(), peers: new Set(), activeTabId: null
+      status: 'connecting', context: null, tabs: new Map(), peers: new Set(), activeTabId: null
     };
     session.context = await browser.newContext({ viewport: { width: 1280, height: 800 }, serviceWorkers: 'block', acceptDownloads: false });
     session.context.setDefaultTimeout(15_000);
-    // Re-check every network request, including redirects and subresources, to reduce SSRF exposure.
-    await session.context.route('**/*', async route => {
-      const requested = route.request().url();
-      // Browser-generated resources such as data images and blob media are not network targets.
-      if (/^(about:|data:|blob:)/i.test(requested)) { await route.continue(); return; }
-      try { await validateUrl(requested); await route.continue(); }
-      catch { await route.abort('blockedbyclient').catch(() => {}); }
-    });
-    if (typeof session.context.routeWebSocket === 'function') {
-      await session.context.routeWebSocket('**/*', async route => {
-        try {
-          const checked = route.url().replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
-          await validateUrl(checked); await route.connect();
-        } catch { route.close({ code: 1008, reason: 'Blocked by network policy' }); }
-      });
-    }
-    const tab = await createTab(session);
+    await installNetworkPolicy(session.context);
+    const tab = await createTab(session);    const tab = await createTab(session);
     session.activeTabId = tab.id;
+    session.status = 'connecting';
     sessions.set(session.id, session);
     return { session, token, tab };
   } catch (error) {
@@ -294,6 +278,7 @@ async function createSession() {
   }
 }
 async function closeSession(session, reason = 'Session closed') {
+  session.status = 'closed';
   sessions.delete(session.id);
   for (const peer of session.peers) if (peer.readyState === WebSocket.OPEN) peer.close(4408, reason);
   session.peers.clear();
