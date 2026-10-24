@@ -360,7 +360,7 @@ async function handleHttp(req, res) {
       await startStream(session, tab);
       return json(res, 201, { tab: snapshot(tab) });
     }
-    const tabMatch = /^tabs\/([^/]+)(?:\/(navigate|back|forward|reload))?$/.exec(action);
+    const tabMatch = /^tabs\/([^/]+)(?:\/(navigate|back|forward|reload|stop))?$/.exec(action);
     if (tabMatch) {
       const tab = session.tabs.get(decodeURIComponent(tabMatch[1]));
       if (!tab || tab.page.isClosed()) return json(res, 404, { error: 'That browser tab is no longer available.' });
@@ -418,17 +418,37 @@ async function handleHttp(req, res) {
           throw Object.assign(new Error(message), { statusCode: 422 });
         }
       }
+      if (operation === 'stop' && req.method === 'POST') {
+        await readBody(req);
+        try {
+          if (tab.cdp) await tab.cdp.send('Page.stopLoading');
+          else await tab.page.evaluate(() => window.stop());
+        } catch {}
+        if (tab.navigationTimer) clearTimeout(tab.navigationTimer);
+        tab.navigationTimer = null;
+        tab.loading = false;
+        session.status = 'ready';
+        await updateTab(tab, false);
+        log('navigation_stopped', { sessionId: session.id, tabId: tab.id });
+        return json(res, 200, { tab: snapshot(tab), status: session.status });
+      }
       if (['back', 'forward', 'reload'].includes(operation) && req.method === 'POST') {
         await readBody(req);
-        tab.loading = true; emit(session, stateOf(tab));
+        tab.loading = true;
+        session.status = 'loading';
+        emit(session, stateOf(tab));
         try {
           if (operation === 'back') await tab.page.goBack({ waitUntil: 'commit', timeout: 15_000 });
           if (operation === 'forward') await tab.page.goForward({ waitUntil: 'commit', timeout: 15_000 });
           if (operation === 'reload') await tab.page.reload({ waitUntil: 'commit', timeout: 15_000 });
-        } catch {}
+        } catch (error) {
+          log('history_navigation_error', { sessionId: session.id, tabId: tab.id, operation, error: String(error?.message || error).slice(0, 140) });
+        }
         await updateTab(tab, false);
+        session.status = 'ready';
         await startStream(session, tab);
-        return json(res, 200, { tab: snapshot(tab) });
+        log('navigation_success', { sessionId: session.id, tabId: tab.id, operation });
+        return json(res, 200, { tab: snapshot(tab), status: session.status });
       }
     }
     return json(res, 404, { error: 'Not found.' });
