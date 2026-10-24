@@ -211,14 +211,28 @@ try {
   assert(invalid.res.status === 400, `Unsafe URL was not rejected: HTTP ${invalid.res.status} ${invalid.raw}`);
   console.log('PASS unsafe URL rejection');
 
-  const beforeInput = messages.length;
-  socket.send(JSON.stringify({ type: 'input', tabId: activeTabId, event: 'mouseMoved', x: 80, y: 80 }));
-  socket.send(JSON.stringify({ type: 'input', tabId: activeTabId, event: 'mousePressed', x: 80, y: 80, button: 0 }));
-  socket.send(JSON.stringify({ type: 'input', tabId: activeTabId, event: 'mouseReleased', x: 80, y: 80, button: 0 }));
+  const clickRemote = (x, y) => {
+    socket.send(JSON.stringify({ type: 'input', tabId: activeTabId, event: 'mouseMoved', x, y, button: 0 }));
+    socket.send(JSON.stringify({ type: 'input', tabId: activeTabId, event: 'mousePressed', x, y, button: 0 }));
+    socket.send(JSON.stringify({ type: 'input', tabId: activeTabId, event: 'mouseReleased', x, y, button: 0 }));
+  };
+  const beforeInteraction = messages.length;
+  // The public test fixture input is at (20,20)-(300,58); the submit button
+  // is at (20,72)-(160,110). Actually focus a text field, type into it, then
+  // click the button and verify the page's URL/state—not merely that messages arrived.
+  clickRemote(110, 38);
   socket.send(JSON.stringify({ type: 'type', tabId: activeTabId, text: 'browse2browse-smoke' }));
-  socket.send(JSON.stringify({ type: 'key', tabId: activeTabId, key: 'Enter', code: 'Enter', modifiers: {} }));
-  await waitMessage(m => m.type === 'frame' && m.tabId === activeTabId, beforeInput, 8_000, 'viewer frame after pointer and keyboard events');
-  console.log('PASS remote pointer and keyboard control messages are accepted');
+  clickRemote(80, 88);
+  await waitSessionUrl(baseUrl, id, token, '#interaction-browse2browse-smoke', 8_000);
+  await waitMessage(
+    m => m.type === 'state' && m.tabId === activeTabId && m.url.includes('#interaction-browse2browse-smoke'),
+    beforeInteraction, 8_000, 'page state after real text input and mouse click'
+  );
+  await waitMessage(
+    m => m.type === 'frame' && m.tabId === activeTabId && typeof m.data === 'string' && m.data.length > 1000,
+    beforeInteraction, 8_000, 'viewer frame after pointer and keyboard interaction'
+  );
+  console.log('PASS remote mouse click and typing changed the actual live page');
 
   // Explicitly simulate the browser process crashing. The helper endpoint is
   // enabled only for this NODE_ENV=test child process and is never available in production.
