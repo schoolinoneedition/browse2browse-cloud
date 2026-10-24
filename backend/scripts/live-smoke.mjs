@@ -141,6 +141,9 @@ try {
   session = created.data;
   const { id, token, activeTabId } = session;
   console.log('PASS remote session created');
+  const saturated = await apiRequest('/api/session', { method:'POST', body:{}, timeout:30_000 });
+  assert(saturated.response.status === 503, `Session capacity was not enforced: HTTP ${saturated.response.status} ${saturated.raw}`);
+  console.log('PASS concurrent session limit enforced');
 
   const ready = await openSocket(id, token);
   assert(ready.activeTabId === activeTabId, 'Viewer was attached to the wrong active tab.');
@@ -191,6 +194,27 @@ try {
   const invalid = await apiRequest(`/api/session/${id}/navigate`, { method:'POST', token, body:{ url:'file:///etc/passwd' } });
   assert(invalid.response.status === 400, `Unsafe URL was not rejected: HTTP ${invalid.response.status}`);
   console.log('PASS unsafe address rejected by backend');
+
+  const stopped = await apiRequest(`/api/sessions/${id}/tabs/${activeTabId}/stop`, { method:'POST', token, body:{} });
+  assert(stopped.response.ok && stopped.data.status === 'ready', `Stop control failed: HTTP ${stopped.response.status} ${stopped.raw}`);
+  console.log('PASS Stop control reaches the live browser');
+
+  const newTabResponse = await apiRequest(`/api/sessions/${id}/tabs`, { method:'POST', token, body:{} });
+  assert(newTabResponse.response.status === 201 && newTabResponse.data.tab?.id, `New tab failed: HTTP ${newTabResponse.response.status} ${newTabResponse.raw}`);
+  const secondTabId = newTabResponse.data.tab.id;
+  ws.send(JSON.stringify({ type:'activate', tabId:secondTabId }));
+  await navigate(id, token, secondTabId, 'https://example.com/');
+  console.log('PASS new tab opened and rendered its own real browser page');
+
+  const closeTabResponse = await apiRequest(`/api/sessions/${id}/tabs/${secondTabId}`, { method:'DELETE', token });
+  assert(closeTabResponse.response.ok, `Close tab failed: HTTP ${closeTabResponse.response.status} ${closeTabResponse.raw}`);
+  const afterClose = await waitSessionUrl(id, token, 'smoke-fixture.html');
+  assert(afterClose.state.activeTabId === activeTabId, 'Closing the second tab did not restore the previous tab.');
+  console.log('PASS close tab restores the previous live tab');
+
+  const sessionStatus = await apiRequest(`/api/session/${id}`, { token });
+  assert(sessionStatus.response.ok && ['ready','disconnected'].includes(sessionStatus.data.status), `Session status endpoint failed: HTTP ${sessionStatus.response.status} ${sessionStatus.raw}`);
+  console.log('PASS session status endpoint reports current state');
 
   ws.close();
   ws = null;
