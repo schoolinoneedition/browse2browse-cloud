@@ -9,9 +9,14 @@ const PORT = Number(process.env.PORT || 10000);
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 30 * 60 * 1000);
 const MAX_SESSIONS = Math.max(1, Number(process.env.MAX_SESSIONS || 1));
 const MAX_TABS = Math.max(1, Number(process.env.MAX_TABS || 6));
-const STREAM_QUALITY = 76;
-const STREAM_EVERY_NTH_FRAME = 1;
-const FRAME_BUFFER_LIMIT = 450_000;
+// JPEG quality is a 0–100 scale; keep three bounded profiles instead of
+// allowing an invalid/unlimited quality value to overload weaker devices.
+const STREAM_PROFILES = Object.freeze({
+  smooth: Object.freeze({ quality: 78, maxWidth: 1440, maxHeight: 900, everyNthFrame: 1 }),
+  balanced: Object.freeze({ quality: 86, maxWidth: 1920, maxHeight: 1200, everyNthFrame: 1 }),
+  sharp: Object.freeze({ quality: 92, maxWidth: 1920, maxHeight: 1200, everyNthFrame: 1 })
+});
+const FRAME_BUFFER_LIMIT = 300_000;
 const subresourceDnsLookup = createDnsCachedLookup(undefined, { ttlMs: 5_000, maxEntries: 256 });
 const allowedOrigins = new Set((process.env.ALLOWED_ORIGINS || 'http://localhost:5173,https://schoolinoneedition.github.io').split(',').map(x => x.trim()).filter(Boolean));
 const sessions = new Map();
@@ -19,6 +24,12 @@ const rateBuckets = new Map();
 let browserPromise = null;
 let pendingSessionCreates = 0;
 const log = (event, data = {}) => console.log(JSON.stringify({ time: new Date().toISOString(), event, ...data }));
+function normalizeStreamProfile(value) {
+  return Object.hasOwn(STREAM_PROFILES, value) ? value : 'balanced';
+}
+function streamConfig(session) {
+  return STREAM_PROFILES[normalizeStreamProfile(session?.streamProfile)];
+}
 const hashToken = value => crypto.createHash('sha256').update(value).digest();
 
 function json(res, status, data, extra = {}) {
@@ -232,7 +243,7 @@ async function startStream(session, tab, { sendKeyframe = true } = {}) {
     } catch {}
     try {
       await tab.cdp.send('Page.startScreencast', {
-        format: 'jpeg', quality: STREAM_QUALITY, maxWidth: 1920, maxHeight: 1200, everyNthFrame: STREAM_EVERY_NTH_FRAME
+        format: 'jpeg', ...streamConfig(session)
       });
       await updateTab(tab);
       if (sendKeyframe) await sendViewerKeyframe(session, tab);
@@ -258,7 +269,7 @@ async function startStream(session, tab, { sendKeyframe = true } = {}) {
       await tab.cdp.send('Page.enable');
     }
     await tab.cdp.send('Page.startScreencast', {
-      format: 'jpeg', quality: STREAM_QUALITY, maxWidth: 1920, maxHeight: 1200, everyNthFrame: STREAM_EVERY_NTH_FRAME
+      format: 'jpeg', ...streamConfig(session)
     });
     await updateTab(tab);
     if (sendKeyframe) await sendViewerKeyframe(session, tab);
@@ -274,7 +285,7 @@ async function sendViewerKeyframe(session, tab) {
     // This is only a keyframe: continued interaction and updates still require the
     // native CDP screencast started by startStream (there is no screenshot-only mode).
     const captured = await tab.cdp.send('Page.captureScreenshot', {
-      format: 'jpeg', quality: 78, fromSurface: true
+      format: 'jpeg', quality: streamConfig(session).quality, fromSurface: true
     });
     const viewport = tab.page.viewportSize() || { width: 1280, height: 800 };
     emit(session, {
@@ -330,7 +341,7 @@ async function createSession() {
     const token = crypto.randomBytes(32).toString('base64url');
     session = {
       id: crypto.randomUUID(), tokenHash: hashToken(token), createdAt: Date.now(), lastSeen: Date.now(),
-      status: 'connecting', context: null, tabs: new Map(), peers: new Set(), activeTabId: null
+      status: 'connecting', context: null, tabs: new Map(), peers: new Set(), activeTabId: null, streamProfile: 'balanced'
     };
     session.context = await browser.newContext({ viewport: { width: 1280, height: 800 }, serviceWorkers: 'block', acceptDownloads: false });
     session.context.setDefaultTimeout(15_000);
@@ -588,6 +599,7 @@ wss.on('connection', (ws, req) => {
         clearTimeout(timer);
         ws.authenticated = true;
         ws.session = session;
+        session.streamProfile = normalizeStreamProfile(message.streamProfile || session.streamProfile);
         session.lastSeen = Date.now();
         try {
           const tab = session.tabs.get(session.activeTabId);
@@ -601,7 +613,8 @@ wss.on('connection', (ws, req) => {
             type: 'ready',
             status: session.status,
             tabs: [...session.tabs.values()].map(snapshot),
-            activeTabId: session.activeTabId
+            activeTabId: session.activeTabId,
+            streamProfile: session.streamProfile
           }));
           // Static pages may not produce a new CDP damage frame immediately after
           // reconnecting. Send one current keyframe, then rely on the live screencast.
@@ -617,6 +630,16 @@ wss.on('connection', (ws, req) => {
       }
       session.lastSeen = Date.now();
       if (message.type === 'ping') { ws.send(JSON.stringify({ type: 'pong', at: Date.now() })); return; }
+      if (message.type === 'streamProfile') {
+        const profile = normalizeStreamProfile(message.profile);
+        if (profile !== session.streamProfile) {
+          session.streamProfile = profile;
+          const activeTab = session.tabs.get(session.activeTabId);
+          if (activeTab) await startStream(session, activeTab, { sendKeyframe: true });
+        }
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'streamProfile', profile: session.streamProfile }));
+        return;
+      }
       const tab = session.tabs.get(message.tabId);
       if (message.type === 'activate' && tab) { await startStream(session, tab); return; }
       if (message.type === 'reorder') return; // The visual order is client-side; tab IDs remain stable.
