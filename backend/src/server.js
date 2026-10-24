@@ -245,6 +245,32 @@ async function startStream(session, tab) {
     throw Object.assign(new Error('The live browser stream could not be started. Restart the session and try again.'), { statusCode: 503 });
   }
 }
+async function sendViewerKeyframe(session, tab) {
+  if (!tab?.cdp || tab.page.isClosed()) return;
+  try {
+    // Send one real, current compositor frame to initialize a newly opened viewer.
+    // This is only a keyframe: continued interaction and updates still require the
+    // native CDP screencast started by startStream (there is no screenshot-only mode).
+    const captured = await tab.cdp.send('Page.captureScreenshot', {
+      format: 'jpeg', quality: 72, fromSurface: true
+    });
+    const viewport = tab.page.viewportSize() || { width: 1280, height: 800 };
+    emit(session, {
+      type: 'frame',
+      tabId: tab.id,
+      data: captured.data,
+      width: viewport.width,
+      height: viewport.height,
+      keyframe: true
+    });
+  } catch (error) {
+    log('browser_keyframe_failed', {
+      sessionId: session.id,
+      tabId: tab.id,
+      error: String(error?.message || error).slice(0, 160)
+    });
+  }
+}
 async function installNetworkPolicy(context) {
   // Re-check network requests, including redirects and subresources. Public-IP checks
   // are defense in depth; host-level egress controls are still recommended.
@@ -508,17 +534,20 @@ wss.on('connection', (ws, req) => {
         try {
           const tab = session.tabs.get(session.activeTabId);
           if (!tab) throw Object.assign(new Error('The browser session has no active tab.'), { statusCode: 503 });
-          // Do not tell the frontend that the viewer is ready until the native live
-          // screencast has actually started. No screenshot-only substitute is used.
+          // Do not confirm readiness until native CDP screencasting is active.
+          // Add the peer before starting the stream so it cannot miss initial frames.
+          session.peers.add(ws);
           await startStream(session, tab);
           session.status = 'ready';
-          session.peers.add(ws);
           ws.send(JSON.stringify({
             type: 'ready',
             status: session.status,
             tabs: [...session.tabs.values()].map(snapshot),
             activeTabId: session.activeTabId
           }));
+          // Static pages may not produce a new CDP damage frame immediately after
+          // reconnecting. Send one current keyframe, then rely on the live screencast.
+          await sendViewerKeyframe(session, tab);
         } catch (error) {
           session.status = 'crashed';
           log('viewer_connection_failed', { sessionId: session.id, error: String(error?.message || error).slice(0, 160) });
