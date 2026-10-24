@@ -215,6 +215,7 @@ async function startStream(session, tab) {
         format: 'jpeg', quality: 72, maxWidth: 1600, maxHeight: 1000, everyNthFrame: 1
       });
       await updateTab(tab);
+      await sendViewerKeyframe(session, tab);
       log('browser_stream_restarted', { sessionId: session.id, tabId: tab.id });
       return;
     } catch (error) {
@@ -240,6 +241,7 @@ async function startStream(session, tab) {
       format: 'jpeg', quality: 72, maxWidth: 1600, maxHeight: 1000, everyNthFrame: 1
     });
     await updateTab(tab);
+    await sendViewerKeyframe(session, tab);
   } catch (error) {
     log('browser_stream_start_failed', { tabId: tab.id, error: String(error?.message || error).slice(0, 180) });
     throw Object.assign(new Error('The live browser stream could not be started. Restart the session and try again.'), { statusCode: 503 });
