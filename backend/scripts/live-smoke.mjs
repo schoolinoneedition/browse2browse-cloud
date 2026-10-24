@@ -59,7 +59,7 @@ async function waitForPublicServices() {
         backendLiveness: liveness.status,
         backendHealth: health.status
       };
-      if (home.ok && homeText.includes('Browse2Browse Cloud') && homeText.includes('app.js?v=9')
+      if (home.ok && homeText.includes('Browse2Browse Cloud') && homeText.includes('app.js?v=10')
         && fixture.ok && fixtureText.includes('Remote Browser Test')
         && liveness.ok && health.ok) return;
     } catch (error) {
