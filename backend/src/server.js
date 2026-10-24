@@ -367,21 +367,37 @@ async function handleHttp(req, res) {
     }
   }
   if (url.pathname === '/health/browser' && req.method === 'GET') {
-    let context;
-    try {
-      const browser = await ensureBrowser();
-      context = await browser.newContext({ viewport: { width: 800, height: 600 }, serviceWorkers: 'block' });
-      await installNetworkPolicy(context);
-      const page = await context.newPage();
-      await page.goto('https://example.com/', { waitUntil: 'domcontentloaded', timeout: 10_000 });
-      const title = (await page.title()).slice(0, 160);
-      if (!/Example Domain/i.test(title)) throw new Error('Browser did not return the expected test page.');
-      return json(res, 200, { ok: true, status: 'ok', browser: 'ready', probe: 'https://example.com/', title });
-    } catch (error) {
-      return json(res, 503, { ok: false, status: 'degraded', browser: 'unavailable', error: String(error?.message || error).slice(0, 240) });
-    } finally {
-      await context?.close().catch(() => {});
+    let lastError = null;
+    // External DNS/TLS routes can occasionally fail transiently. Retry with a
+    // fresh isolated context, but only return healthy after the real page title
+    // confirms that actual public navigation worked.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      let context;
+      try {
+        const browser = await ensureBrowser();
+        context = await browser.newContext({ viewport: { width: 800, height: 600 }, serviceWorkers: 'block' });
+        await installNetworkPolicy(context);
+        const page = await context.newPage();
+        await page.goto('https://example.com/', { waitUntil: 'domcontentloaded', timeout: 12_000 });
+        const title = (await page.title()).slice(0, 160);
+        if (!/Example Domain/i.test(title)) throw new Error('Browser did not return the expected test page.');
+        log('browser_health_probe_success', { attempt, title });
+        return json(res, 200, { ok: true, status: 'ok', browser: 'ready', probe: 'https://example.com/', title, attempts: attempt });
+      } catch (error) {
+        lastError = error;
+        log('browser_health_probe_failed', {
+          attempt,
+          error: String(error?.message || error).slice(0, 180)
+        });
+      } finally {
+        await context?.close().catch(() => {});
+      }
+      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 350));
     }
+    return json(res, 503, {
+      ok: false, status: 'degraded', browser: 'unavailable',
+      error: String(lastError?.message || lastError || 'Browser navigation failed.').slice(0, 240)
+    });
   }
   try {
     const testCrashMatch = /^\/__test\/browser-crash\/([0-9a-f-]{36})$/.exec(url.pathname);
