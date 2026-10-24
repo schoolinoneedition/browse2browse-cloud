@@ -204,8 +204,23 @@ async function startStream(session, tab) {
   }
   const previous = session.tabs.get(session.activeTabId);
   if (previous && previous.id === tab.id && tab.cdp) {
-    await updateTab(tab);
-    return;
+    // A peer may reconnect while CDP is still attached to this tab. Explicitly
+    // restart the native screencast so a new viewer gets fresh frames rather
+    // than relying on the previous stream to resume by itself.
+    try {
+      await tab.cdp.send('Page.stopScreencast');
+    } catch {}
+    try {
+      await tab.cdp.send('Page.startScreencast', {
+        format: 'jpeg', quality: 72, maxWidth: 1600, maxHeight: 1000, everyNthFrame: 1
+      });
+      await updateTab(tab);
+      log('browser_stream_restarted', { sessionId: session.id, tabId: tab.id });
+      return;
+    } catch (error) {
+      log('browser_stream_restart_failed', { sessionId: session.id, tabId: tab.id, error: String(error?.message || error).slice(0, 180) });
+      throw Object.assign(new Error('The live browser stream could not reconnect. Restart the browser session and try again.'), { statusCode: 503 });
+    }
   }
   if (previous && previous.id !== tab.id) await stopStream(previous);
   session.activeTabId = tab.id;
