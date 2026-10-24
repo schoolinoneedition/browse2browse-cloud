@@ -5,8 +5,8 @@ A separate cloud browser project. The UI is published as a Render static site an
 ## Project links
 
 - Source repository: https://github.com/schoolinoneedition/browse2browse-cloud
-- Expected frontend URL after Render Blueprint deployment: https://browse2browse-cloud.onrender.com
-- Expected browser API: https://browse2browse-cloud-backend.onrender.com
+- Live frontend: https://browse2browse-cloud.onrender.com/
+- Live browser API: https://browse2browse-cloud-backend.onrender.com
 - Blueprint: `render.yaml`
 
 ## Deploy the app
