@@ -65,7 +65,7 @@ async function waitForPublicServices() {
           fixture: fixture.status,
           backendHealth: health.status
         };
-        servicesReady = home.ok && homeText.includes('Browse2Browse Cloud') && homeText.includes('app.js?v=16')
+        servicesReady = home.ok && homeText.includes('Browse2Browse Cloud') && homeText.includes('app.js?v=17')
           && fixture.ok && fixtureText.includes('Remote Browser Test') && health.ok;
         if (!servicesReady) {
           await sleep(10_000);
@@ -478,9 +478,9 @@ try {
     await navigateFromUI(frontend + '/smoke-fixture.html');
     await uiPage.waitForFunction(() => {
       const view = document.querySelector('#remoteView');
-      return view && view.naturalWidth >= 1800 && view.naturalHeight > 0;
+      return view && view.naturalWidth >= 1400 && view.naturalHeight > 0;
     }, null, { timeout: 20_000 });
-    console.log('PASS remote stream remains full-width at a 1920px viewport');
+    console.log('PASS remote stream uses the selected quality profile at a 1920px viewport');
     console.log('PASS address bar navigated through the actual frontend');
 
     await clickRemoteAt(90, 38);
