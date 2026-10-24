@@ -24,17 +24,46 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Skip stale live tests
+        id: freshness
+        shell: bash
+        run: |
+          tested_sha="$(git rev-parse HEAD)"
+          latest_sha="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          if [ -z "$latest_sha" ]; then
+            echo "::error::Could not verify the current main branch commit."
+            exit 1
+          fi
+          echo "Tested commit: $tested_sha"
+          echo "Current main:  $latest_sha"
+          if [ "$tested_sha" != "$latest_sha" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping this outdated deployment test; a newer main commit exists."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Node.js
+        if: steps.freshness.outputs.skip != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
       - name: Install test dependencies
+        if: steps.freshness.outputs.skip != 'true'
         run: npm install --prefix backend --no-audit --no-fund
+
       - name: Install local Chromium for frontend UI testing
+        if: steps.freshness.outputs.skip != 'true'
         run: cd backend && npx playwright install --with-deps chromium
+
       - name: Validate public smoke test
+        if: steps.freshness.outputs.skip != 'true'
         run: node --check backend/scripts/live-smoke.mjs
+
       - name: Test the deployed Render browser end to end
+        if: steps.freshness.outputs.skip != 'true'
         run: node backend/scripts/live-smoke.mjs
         env:
           B2B_FRONTEND_URL: https://browse2browse-cloud.onrender.com
