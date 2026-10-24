@@ -129,7 +129,13 @@ function snapshot(tab) {
 }
 function emit(session, message) {
   const data = JSON.stringify(message);
-  for (const peer of session.peers) if (peer.readyState === WebSocket.OPEN && peer.authenticated) peer.send(data);
+  for (const peer of session.peers) {
+    if (peer.readyState !== WebSocket.OPEN || !peer.authenticated) continue;
+    // Do not let a slow viewer grow an unbounded WebSocket send queue.
+    // Drop stale video frames only; browser state/errors are never dropped.
+    if (message.type === 'frame' && peer.bufferedAmount > 1_500_000) continue;
+    peer.send(data);
+  }
 }
 async function updateTab(tab, loading = undefined) {
   if (tab.page.isClosed()) return;
@@ -167,6 +173,16 @@ function attachNavigationEvents(tab) {
   });
   tab.page.on('domcontentloaded', () => finishNavigation(tab));
   tab.page.on('load', () => finishNavigation(tab));
+  tab.page.on('crash', () => {
+    const session = tab.session;
+    if (!session || session.status === 'closed' || session.status === 'crashed') return;
+    session.status = 'crashed';
+    log('browser_tab_crashed', { sessionId: session.id, tabId: tab.id });
+    emit(session, { type: 'error', tabId: tab.id, message: 'This browser page crashed. The session is being restarted.' });
+    closeSession(session, 'Browser page crashed').catch(error => {
+      log('session_cleanup_error', { sessionId: session.id, error: String(error?.message || error).slice(0, 160) });
+    });
+  });
   tab.page.on('close', () => {
     if (tab.navigationTimer) clearTimeout(tab.navigationTimer);
     if (tab.screenshotTimer) clearInterval(tab.screenshotTimer);
@@ -212,7 +228,7 @@ async function startStream(session, tab) {
     } catch {}
     try {
       await tab.cdp.send('Page.startScreencast', {
-        format: 'jpeg', quality: 72, maxWidth: 1600, maxHeight: 1000, everyNthFrame: 1
+        format: 'jpeg', quality: 64, maxWidth: 1280, maxHeight: 800, everyNthFrame: 2
       });
       await updateTab(tab);
       await sendViewerKeyframe(session, tab);
@@ -238,7 +254,7 @@ async function startStream(session, tab) {
       await tab.cdp.send('Page.enable');
     }
     await tab.cdp.send('Page.startScreencast', {
-      format: 'jpeg', quality: 72, maxWidth: 1600, maxHeight: 1000, everyNthFrame: 1
+      format: 'jpeg', quality: 64, maxWidth: 1280, maxHeight: 800, everyNthFrame: 2
     });
     await updateTab(tab);
     await sendViewerKeyframe(session, tab);
@@ -368,6 +384,21 @@ async function handleHttp(req, res) {
     }
   }
   try {
+    const testCrashMatch = /^\/__test\/browser-crash\/([0-9a-f-]{36})$/.exec(url.pathname);
+    if (testCrashMatch) {
+      // Never enable this test helper in a deployed environment.
+      if (process.env.NODE_ENV !== 'test' || process.env.ALLOW_TEST_CRASH !== 'true') {
+        return json(res, 404, { error: 'Not found.' });
+      }
+      if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed.' });
+      const owner = requireOwnedSession(req, testCrashMatch[1]);
+      await readBody(req);
+      const browser = browserPromise && await browserPromise;
+      if (!browser?.isConnected()) throw Object.assign(new Error('Browser process is not connected.'), { statusCode: 503 });
+      log('test_browser_crash_requested', { sessionId: owner.id });
+      await browser.close();
+      return json(res, 202, { ok: true, status: 'crash_requested' });
+    }
     if ((url.pathname === '/api/sessions' || url.pathname === '/api/session') && req.method === 'POST') {
       await readBody(req);
       const created = await createSession();
