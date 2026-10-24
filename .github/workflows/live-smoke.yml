@@ -30,6 +30,8 @@ jobs:
           node-version: 22
       - name: Install test dependencies
         run: npm install --prefix backend --no-audit --no-fund
+      - name: Install local Chromium for frontend UI testing
+        run: cd backend && npx playwright install --with-deps chromium
       - name: Validate public smoke test
         run: node --check backend/scripts/live-smoke.mjs
       - name: Test the deployed Render browser end to end
