@@ -29,6 +29,6 @@ services:
       - key: MAX_TABS
         value: "5"
       - key: SESSION_TTL_MS
-        value: "600000"
+        value: "1800000"
       - key: ALLOWED_ORIGINS
         value: "https://browse2browse-cloud.onrender.com,https://schoolinoneedition.github.io,http://localhost:5173"
