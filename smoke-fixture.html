@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Browse2Browse Remote Browser Test</title>
+  <style>
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;font-family:Arial,sans-serif;color:#172033;background:#f7f8fb}
+    #input{position:fixed;z-index:2;top:20px;left:20px;width:280px;height:38px;padding:8px 10px;border:1px solid #aeb9cf;border-radius:6px;background:#fff;font:16px Arial,sans-serif}
+    #submit{position:fixed;z-index:2;top:72px;left:20px;width:140px;height:38px;border:0;border-radius:6px;background:#315cce;color:#fff;font:600 14px Arial,sans-serif;cursor:pointer}
+    #result{position:fixed;z-index:2;top:124px;left:20px;font-size:14px;color:#1f513b}
+    #hint{position:fixed;z-index:1;top:160px;left:20px;font-size:12px;color:#657084}
+    #long-page{height:3200px;padding:250px 20px 0}
+    .marker{margin-top:1200px;padding:18px;background:#e4e9f4;border-radius:8px;max-width:440px}
+  </style>
+</head>
+<body>
+  <input id="input" aria-label="Remote browser keyboard test" placeholder="Type b2b-smoke-here">
+  <button id="submit" type="button">Verify interaction</button>
+  <p id="result">Waiting for mouse and keyboard input.</p>
+  <p id="hint">This page is a tiny public fixture for automated remote-browser smoke tests.</p>
+  <main id="long-page">
+    <h1>Scroll test</h1>
+    <p>Scroll this long page in the remote viewer. The URL fragment changes after scrolling.</p>
+    <div class="marker">End of the first long section.</div>
+    <div class="marker" style="margin-top:700px">A second section confirms the remote viewport can scroll.</div>
+  </main>
+  <script>
+    const input=document.getElementById('input');
+    const result=document.getElementById('result');
+    document.getElementById('submit').addEventListener('click',()=>{
+      const value=input.value.trim();
+      result.textContent='INTERACTION_OK:'+value;
+      window.location.hash='interaction-'+encodeURIComponent(value);
+    });
+    let scrollReported=false;
+    window.addEventListener('scroll',()=>{
+      if(scrollReported)return;
+      scrollReported=true;
+      window.location.hash='scrolled-'+Math.round(window.scrollY);
+      result.textContent='SCROLL_OK:'+Math.round(window.scrollY);
+    },{passive:true});
+  </script>
+</body>
+</html>
