@@ -15,7 +15,7 @@ The repo now defines both the static website and the browser backend in one Rend
 
 Then open the backend's `/healthz` endpoint; it should return JSON with `ok: true`. Finally, test loading a public HTTPS site from the frontend, including typing, clicks, scrolling, back/forward and multiple tabs. A successful build or a healthy `/healthz` alone does not prove remote websites load correctly. Render's free backend can sleep when idle and has limited memory; heavier pages may require a larger plan.
 
-GitHub Actions installs the backend dependencies, checks JavaScript syntax and configuration, and runs URL-policy regression tests. These automated checks do not prove a live Render browser session works end to end. GitHub Pages publishing is intentionally not enabled by this workflow because this project's GitHub connection cannot enable Pages; Render Blueprint is the deployment path for both services.
+GitHub Actions installs backend dependencies and Chromium, checks syntax/configuration, runs URL-policy regression tests, and launches a real Playwright browser for integration tests. A separate production smoke workflow exercises the public Render frontend and API, including a live WebSocket viewer, public website navigation, keyboard/mouse/scroll interactions, history controls, reconnection and cleanup. See [browser architecture and alternative-engine review](docs/browser-architecture.md). A green build is not treated as proof that the public browser session works; the production smoke workflow must pass too. GitHub Pages publishing is intentionally not enabled; Render Blueprint is the deployment path for both services.
 
 ## XBT Supabase integration — separate tables only
 
@@ -44,11 +44,21 @@ ALLOWED_ORIGINS=http://localhost:5173 PORT=10000 npm start
 
 Serve the root frontend from `http://localhost:5173` and set `apiBase` in `config.js` to `http://localhost:10000`.
 
+## Browser health and testing
+
+The service exposes these diagnostic endpoints:
+
+- `/healthz`: lightweight process liveness check used by Render.
+- `/health`: verifies that the browser process is connected and can create a browser context and page.
+- `/health/browser`: verifies a real remote navigation to `https://example.com/` and checks the page title.
+
+After installation, run `npm test --prefix backend` and `npm run test:e2e --prefix backend`. The public Render check is run by GitHub Actions in `.github/workflows/live-smoke.yml`; see the workflow logs for the latest actual result.
+
 ## Security and limits
 
 - The backend accepts public HTTP/HTTPS destinations only and blocks private, loopback, link-local, local and metadata destinations with URL and DNS checks. Host-level network egress controls are still recommended.
 - Browser contexts are isolated and temporary; cookies and site storage are cleared when a session expires.
-- The frontend retries backend cold starts and interrupted WebSocket connections automatically. Chromium startup tries the bundled headless runtime and a second Chromium launch mode; if CDP video frames fail or stop, the service falls back to JPEG page screenshots and Playwright input.
+- The frontend retries backend cold starts and interrupted WebSocket connections automatically, with a bounded exponential backoff. Browser startup tries the bundled Chromium runtime and a second launch mode. Native CDP screencasting is mandatory; a one-time current keyframe initializes a static view, but stream failure is reported rather than switching to screenshot-only browsing.
 - Navigation returns when the main document commits instead of waiting for every analytics or tracking request, so a slow resource is less likely to make the whole page look failed.
 - Some pop-ups, downloads, DRM, extensions, media and permission flows may not work.
 - Respect site terms and administrator access rules. This is not designed to bypass access restrictions.
