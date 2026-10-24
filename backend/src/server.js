@@ -76,7 +76,7 @@ async function ensureBrowser() {
           log('browser_launch_ready', { strategy: attempt.label });
           browser.on('disconnected', () => {
             log('browser_crashed');
-            if (browserPromise === browser) browserPromise = null;
+            browserPromise = null;
             for (const session of [...sessions.values()]) {
               session.status = 'crashed';
               emit(session, { type: 'error', message: 'The remote browser process stopped. A new session is required.' });
@@ -265,7 +265,7 @@ async function createSession() {
     session.context = await browser.newContext({ viewport: { width: 1280, height: 800 }, serviceWorkers: 'block', acceptDownloads: false });
     session.context.setDefaultTimeout(15_000);
     await installNetworkPolicy(session.context);
-    const tab = await createTab(session);    const tab = await createTab(session);
+    const tab = await createTab(session);
     session.activeTabId = tab.id;
     session.status = 'connecting';
     sessions.set(session.id, session);
@@ -296,8 +296,36 @@ async function handleHttp(req, res) {
   if (url.pathname === '/healthz' && req.method === 'GET') {
     return json(res, 200, { ok: true, runtime: 'playwright-chromium', activeSessions: sessions.size, maxSessions: MAX_SESSIONS });
   }
+  if (url.pathname === '/health' && req.method === 'GET') {
+    try {
+      const browser = await ensureBrowser();
+      if (!browser.isConnected()) throw new Error('Browser process is not connected.');
+      const context = await browser.newContext({ viewport: { width: 320, height: 240 } });
+      try { await context.newPage(); } finally { await context.close(); }
+      return json(res, 200, { ok: true, status: 'ok', browser: 'connected', runtime: 'playwright-chromium', activeSessions: sessions.size, maxSessions: MAX_SESSIONS });
+    } catch (error) {
+      return json(res, 503, { ok: false, status: 'degraded', browser: 'unavailable', error: String(error?.message || error).slice(0, 240) });
+    }
+  }
+  if (url.pathname === '/health/browser' && req.method === 'GET') {
+    let context;
+    try {
+      const browser = await ensureBrowser();
+      context = await browser.newContext({ viewport: { width: 800, height: 600 }, serviceWorkers: 'block' });
+      await installNetworkPolicy(context);
+      const page = await context.newPage();
+      await page.goto('https://example.com/', { waitUntil: 'domcontentloaded', timeout: 10_000 });
+      const title = (await page.title()).slice(0, 160);
+      if (!/Example Domain/i.test(title)) throw new Error('Browser did not return the expected test page.');
+      return json(res, 200, { ok: true, status: 'ok', browser: 'ready', probe: 'https://example.com/', title });
+    } catch (error) {
+      return json(res, 503, { ok: false, status: 'degraded', browser: 'unavailable', error: String(error?.message || error).slice(0, 240) });
+    } finally {
+      await context?.close().catch(() => {});
+    }
+  }
   try {
-    if (url.pathname === '/api/sessions' && req.method === 'POST') {
+    if ((url.pathname === '/api/sessions' || url.pathname === '/api/session') && req.method === 'POST') {
       await readBody(req);
       const created = await createSession();
       // A frontend may give up waiting during a cold start. Never keep an invisible
@@ -307,13 +335,24 @@ async function handleHttp(req, res) {
         return;
       }
       log('session_created', { sessionId: created.session.id });
-      return json(res, 201, { id: created.session.id, token: created.token, activeTabId: created.tab.id, tabs: [snapshot(created.tab)] });
+      return json(res, 201, { id: created.session.id, token: created.token, status: created.session.status, activeTabId: created.tab.id, tabs: [snapshot(created.tab)] });
     }
-    const match = /^\/api\/sessions\/([0-9a-f-]{36})(?:\/(.*))?$/.exec(url.pathname);
+    const match = /^\/api\/(?:sessions|session)\/([0-9a-f-]{36})(?:\/(.*))?$/.exec(url.pathname);
     if (!match) return json(res, 404, { error: 'Not found.' });
     const session = requireOwnedSession(req, match[1]);
-    const action = match[2] || '';
-    if (!action && req.method === 'DELETE') { await closeSession(session); return json(res, 200, { ok: true }); }
+    let action = match[2] || '';
+    if (!action && req.method === 'GET') {
+      return json(res, 200, {
+        id: session.id,
+        status: session.status,
+        createdAt: new Date(session.createdAt).toISOString(),
+        lastSeen: new Date(session.lastSeen).toISOString(),
+        activeTabId: session.activeTabId,
+        tabs: [...session.tabs.values()].map(snapshot)
+      });
+    }
+    if (action === 'navigate' && req.method === 'POST') action = `tabs/${session.activeTabId}/navigate`;
+    if (!action && req.method === 'DELETE') { await closeSession(session); return json(res, 200, { ok: true, status: 'closed' }); }
     if (action === 'tabs' && req.method === 'GET') return json(res, 200, { tabs: [...session.tabs.values()].map(snapshot), activeTabId: session.activeTabId });
     if (action === 'tabs' && req.method === 'POST') {
       await readBody(req);
@@ -343,14 +382,19 @@ async function handleHttp(req, res) {
         const body = await readBody(req);
         const destination = await validateUrl(body.url);
         const previousUrl = tab.page.url();
-        tab.loading = true; emit(session, stateOf(tab));
+        tab.loading = true;
+        session.status = 'loading';
+        log('navigation_started', { sessionId: session.id, tabId: tab.id, host: new URL(destination).hostname });
+        emit(session, stateOf(tab));
         try {
           // Commit-based navigation avoids waiting for slow analytics, ads or trackers.
           await tab.page.goto(destination, { waitUntil: 'commit', timeout: 20_000 });
           tab.title = (await tab.page.title().catch(() => '')).slice(0, 300) || new URL(tab.page.url()).hostname;
           await updateTab(tab, false);
           await startStream(session, tab);
-          return json(res, 200, { tab: snapshot(tab), navigationStarted: true });
+          session.status = 'ready';
+          log('navigation_success', { sessionId: session.id, tabId: tab.id, host: new URL(tab.page.url()).hostname });
+          return json(res, 200, { tab: snapshot(tab), navigationStarted: true, status: session.status });
         } catch (error) {
           // Recovery path: some sites keep loading trackers or long-lived requests after
           // the main document has already committed. Do not discard a usable page merely
@@ -362,10 +406,13 @@ async function handleHttp(req, res) {
             tab.title = (await tab.page.title().catch(() => '')).slice(0, 300) || new URL(tab.page.url()).hostname;
             await updateTab(tab, false).catch(() => {});
             await startStream(session, tab);
-            log('navigation_recovered_after_timeout', { host: new URL(destination).hostname });
+            session.status = 'ready';
+            log('navigation_recovered_after_timeout', { sessionId: session.id, host: new URL(tab.page.url()).hostname });
             return json(res, 200, { tab: snapshot(tab), recovered: true });
           }
           await updateTab(tab, false).catch(() => {});
+          session.status = tab.page.isClosed() ? 'crashed' : 'ready';
+          log('navigation_failed', { sessionId: session.id, tabId: tab.id, host: new URL(destination).hostname, timedOut });
           const message = timedOut ? 'The site took too long to finish loading. The browser tried a recovery path; retry or choose another address.' : 'The remote browser could not load this website. Check the URL or try another site.';
           emit(session, { type: 'error', tabId: tab.id, message });
           throw Object.assign(new Error(message), { statusCode: 422 });
