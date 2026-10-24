@@ -9,3 +9,5 @@
 .shortcut-list span{font-size:10px;line-height:1.35;color:var(--muted);text-align:right}
 button:active{transition:none}
 @media(max-width:420px){.shortcut-list kbd{font-size:9px;padding:4px}.shortcut-list>div{gap:7px}}
+
+.status-dot.connected{background:#269b69;box-shadow:0 0 0 3px #269b6915}
