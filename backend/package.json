@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node src/server.js",
     "check": "node --check src/server.js && node --check src/url-policy.js",
-    "test": "node --test"
+    "test": "node --test",
+    "test:e2e": "node scripts/e2e-smoke.mjs"
   },
   "dependencies": {
     "ipaddr.js": "2.2.0",
