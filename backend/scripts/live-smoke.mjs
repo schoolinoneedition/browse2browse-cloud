@@ -65,7 +65,7 @@ async function waitForPublicServices() {
           fixture: fixture.status,
           backendHealth: health.status
         };
-        servicesReady = home.ok && homeText.includes('Browse2Browse Cloud') && homeText.includes('app.js?v=13')
+        servicesReady = home.ok && homeText.includes('Browse2Browse Cloud') && homeText.includes('app.js?v=14')
           && fixture.ok && fixtureText.includes('Remote Browser Test') && health.ok;
         if (!servicesReady) {
           await sleep(10_000);
@@ -348,6 +348,21 @@ try {
       && viewportLayout.bodyScrollHeight <= viewportLayout.viewportHeight + 1,
       `Unexpected page overflow on Chromebook-sized viewport: ${JSON.stringify(viewportLayout)}`);
     console.log('PASS full-tab layout fits a Chromebook-like 1366×768 viewport');
+
+    await uiPage.setViewportSize({ width: 1920, height: 1080 });
+    const wideLayout = await uiPage.evaluate(() => {
+      const rect = document.querySelector('#browser')?.getBoundingClientRect();
+      return { viewportWidth:window.innerWidth,viewportHeight:window.innerHeight,
+        browserWidth:rect?.width||0,browserHeight:rect?.height||0,
+        bodyScrollWidth:document.body.scrollWidth,bodyScrollHeight:document.body.scrollHeight };
+    });
+    assert(Math.abs(wideLayout.browserWidth-wideLayout.viewportWidth)<=1
+      && Math.abs(wideLayout.browserHeight-wideLayout.viewportHeight)<=1
+      && wideLayout.bodyScrollWidth<=wideLayout.viewportWidth+1
+      && wideLayout.bodyScrollHeight<=wideLayout.viewportHeight+1,
+      `The UI did not resize cleanly to a Windows-sized viewport: ${JSON.stringify(wideLayout)}`);
+    await uiPage.setViewportSize({ width:1366,height:768 });
+    console.log('PASS responsive layout at a 1920×1080 Windows-sized viewport');
     try {
       await uiPage.waitForFunction(() => document.querySelector('#statusText')?.textContent.includes('Connected'), null, { timeout: 60_000 });
     } catch (error) {
@@ -424,9 +439,9 @@ try {
     await waitViewerFrame();
     console.log('PASS frontend back, forward and reload controls');
 
-    // Return to the fixture, open a second tab using the UI and close it again.
-    await uiPage.locator('#back').click();
-    await waitSessionUrl(uiSession.id, uiSession.token, 'smoke-fixture.html');
+    // Reopen the fixture directly before testing tab lifecycle. Back/Forward are
+    // already tested above; this avoids coupling the new-tab check to website history.
+    await navigateFromUI(frontend + '/smoke-fixture.html');
     const priorTabs = await uiPage.locator('#tabStrip .tab').count();
     await uiPage.locator('#newTab').click();
     await uiPage.waitForFunction(count => document.querySelectorAll('#tabStrip .tab').length === count + 1, priorTabs);
