@@ -97,16 +97,21 @@ async function waitForPublicServices() {
 async function waitSessionUrl(id, token, suffix, timeout=timeoutMs) {
   const end = Date.now() + timeout;
   let last = null;
+  let lastError = null;
   while (Date.now() < end) {
     const state = await apiRequest(`/api/session/${id}`, { token, timeout: 8_000 });
     if (state.response.ok) {
       last = state.data;
+      lastError = null;
       const tab = (last.tabs || []).find(item => item.id === last.activeTabId);
       if (tab?.url?.includes(suffix)) return { state: last, tab };
+    } else {
+      lastError = `HTTP ${state.response.status} ${state.raw.slice(0,180)}`;
     }
-    await sleep(250);
+    // Keep polling below the backend's per-IP rate limit, even across many checks.
+    await sleep(750);
   }
-  throw new Error(`Session did not reach ${suffix}; last state: ${JSON.stringify(last)}`);
+  throw new Error(`Session did not reach ${suffix}; last state: ${JSON.stringify(last)}; latest status error: ${lastError || 'none'}`);
 }
 async function openSocket(id, token) {
   const url = `${api.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')}/stream?sessionId=${encodeURIComponent(id)}`;
@@ -389,11 +394,53 @@ try {
       const view = document.querySelector('#remoteView');
       return view && !view.hidden && view.src.startsWith('data:image/jpeg;base64,') && view.naturalWidth > 0;
     }, null, { timeout: 25_000 });
+    const waitUiSessionUrl = async (suffix, timeout=30_000) => {
+      const end = Date.now() + timeout;
+      let last = null, lastError = null;
+      while (Date.now() < end) {
+        const current = uiSession;
+        if (current?.id && current?.token) {
+          const state = await apiRequest(`/api/session/${current.id}`, { token:current.token, timeout:8_000 });
+          if (state.response.ok) {
+            last = state.data;
+            lastError = null;
+            const tab = (last.tabs || []).find(item => item.id === last.activeTabId);
+            if (tab?.url?.includes(suffix)) return { state:last, tab };
+          } else lastError = `HTTP ${state.response.status} ${state.raw.slice(0,180)}`;
+        }
+        await sleep(750);
+      }
+      throw new Error(`Frontend session did not reach ${suffix}; last state: ${JSON.stringify(last)}; latest status error: ${lastError || 'none'}`);
+    };
     const navigateFromUI = async url => {
+      const navigationResponse = uiPage.waitForResponse(response =>
+        response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/navigate'),
+        { timeout:25_000 }
+      );
       await uiPage.locator('#address').fill(url);
       await uiPage.locator('#addressForm').press('Enter');
+      const response = await navigationResponse;
+      const apiStatus = response.status();
+      const responseBody = await response.text().catch(() => '');
+      if (apiStatus >= 400 && apiStatus < 500 && apiStatus !== 401) {
+        throw new Error(`Address bar navigation was rejected: HTTP ${apiStatus} ${responseBody.slice(0,400)}`);
+      }
+      if (apiStatus === 503 && /capacity/i.test(responseBody)) {
+        throw new Error(`Address bar navigation blocked by browser capacity: ${responseBody.slice(0,400)}`);
+      }
       const parsed = new URL(url);
-      await waitSessionUrl(uiSession.id, uiSession.token, parsed.pathname.split('/').pop() || parsed.hostname);
+      const suffix = parsed.pathname.split('/').pop() || parsed.hostname;
+      try {
+        await waitUiSessionUrl(suffix, apiStatus >= 500 || apiStatus === 401 ? 60_000 : 30_000);
+      } catch (error) {
+        const uiState = await uiPage.evaluate(() => ({
+          status:document.querySelector('#statusText')?.textContent || '',
+          address:document.querySelector('#address')?.value || '',
+          error:document.querySelector('#message')?.innerText || '',
+          tabs:document.querySelectorAll('#tabStrip .tab').length
+        })).catch(() => ({}));
+        throw new Error(`Address bar navigation failed for ${url}: API HTTP ${apiStatus} ${responseBody.slice(0,400)}; UI=${JSON.stringify(uiState)}; ${String(error?.message || error)}`);
+      }
       await waitViewerFrame();
     };
     const clickRemoteAt = async (remoteX, remoteY) => {
