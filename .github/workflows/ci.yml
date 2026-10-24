@@ -11,6 +11,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -29,6 +30,7 @@ jobs:
           node --check backend/src/server.js
           node --check backend/src/url-policy.js
           node --check backend/scripts/e2e-smoke.mjs
+          node --check backend/scripts/live-smoke.mjs
           node -e "JSON.parse(require('node:fs').readFileSync('backend/package.json','utf8'))"
           node -e "JSON.parse(require('node:fs').readFileSync('manifest.webmanifest','utf8'))"
       - name: Run URL policy regression tests
