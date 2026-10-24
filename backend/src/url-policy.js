@@ -10,7 +10,7 @@ export function createDnsCachedLookup(lookup = dns.lookup, { ttlMs = 5_000, maxE
   const limit = Number.isFinite(Number(maxEntries)) ? Math.max(1, Math.floor(Number(maxEntries))) : 256;
 
   return async (host, options) => {
-    const key = String(host || '').toLowerCase().replace(/\\.$/, '');
+    const key = String(host || '').toLowerCase().replace(/\.$/, '');
     const now = Date.now();
     const cached = cache.get(key);
     if (cached && cached.expiresAt > now) {

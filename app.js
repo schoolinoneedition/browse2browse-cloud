@@ -254,7 +254,7 @@
                     pendingFrame=null;
                     if(!latest||latest.tabId!==activeId)return;
                     const current=active();
-                    if(current?.url&&/^https?:\\/\\//i.test(current.url)){
+                    if(current?.url&&/^https?:\/\//i.test(current.url)){
                       view.src=`data:image/jpeg;base64,${latest.data}`;
                       view.hidden=false;$('newtab').hidden=true;$('message').hidden=true;
                     }
