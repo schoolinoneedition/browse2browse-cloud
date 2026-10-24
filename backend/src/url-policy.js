@@ -36,7 +36,7 @@ export async function validateUrl(raw, options = {}) {
     throw new Error('Local and private network destinations are blocked.');
   }
 
-  const host = url.hostname.replace(/^\\[|\\]$/g, '');
+  const host = url.hostname.replace(/^\[|\]$/g, '');
   if (net.isIP(host)) {
     if (!isPublicIp(host)) throw new Error('Local and private network destinations are blocked.');
   } else {
