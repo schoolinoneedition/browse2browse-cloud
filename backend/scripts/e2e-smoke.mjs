@@ -119,6 +119,7 @@ try {
       ...process.env,
       PORT: String(port),
       NODE_ENV: 'test',
+      ALLOW_TEST_CRASH: 'true',
       ALLOWED_ORIGINS: origin,
       MAX_SESSIONS: '1',
       MAX_TABS: '3',
@@ -219,11 +220,59 @@ try {
   await waitMessage(m => m.type === 'frame' && m.tabId === activeTabId, beforeInput, 8_000, 'viewer frame after pointer and keyboard events');
   console.log('PASS remote pointer and keyboard control messages are accepted');
 
-  const closed = await request(baseUrl, `/api/session/${id}`, { method: 'DELETE', token });
-  assert(closed.res.ok && closed.data.status === 'closed', `Session close failed: HTTP ${closed.res.status} ${closed.raw}`);
+  // Explicitly simulate the browser process crashing. The helper endpoint is
+  // enabled only for this NODE_ENV=test child process and is never available in production.
+  const crash = await request(baseUrl, `/__test/browser-crash/${id}`, { method: 'POST', token, body: {} });
+  assert(crash.res.status === 202 && crash.data.status === 'crash_requested',
+    `Browser crash simulation failed: HTTP ${crash.res.status} ${crash.raw}`);
+  console.log('PASS browser crash was triggered in isolated test process');
+
+  const oldSessionEnd = Date.now() + 8_000;
+  let oldSessionResponse;
+  while (Date.now() < oldSessionEnd) {
+    oldSessionResponse = await request(baseUrl, `/api/session/${id}`, { token });
+    if (oldSessionResponse.res.status === 401) break;
+    await sleep(100);
+  }
+  assert(oldSessionResponse?.res.status === 401,
+    `Crashed browser session was not invalidated: HTTP ${oldSessionResponse?.res.status} ${oldSessionResponse?.raw}`);
+  console.log('PASS crashed browser session invalidated and cleaned up');
+
+  const recoveredCreate = await request(baseUrl, '/api/session', { method: 'POST', body: {} });
+  assert(recoveredCreate.res.status === 201 && recoveredCreate.data.id && recoveredCreate.data.token,
+    `Browser did not restart after crash: HTTP ${recoveredCreate.res.status} ${recoveredCreate.raw}`);
+  session = recoveredCreate.data;
+  const recoveredId = session.id, recoveredToken = session.token, recoveredTabId = session.activeTabId;
+  console.log('PASS a new browser process and isolated session started after crash');
+
+  const recoveredWsUrl = `${baseUrl.replace(/^http:/, 'ws:')}/stream?sessionId=${encodeURIComponent(recoveredId)}`;
+  socket = new WebSocket(recoveredWsUrl, { headers: { origin } });
+  socket.on('message', raw => { const parsed = parseMessage(raw); if (parsed) messages.push(parsed); });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Recovered WebSocket timed out.')), 12_000);
+    socket.once('open', () => { clearTimeout(timer); resolve(); });
+    socket.once('error', error => { clearTimeout(timer); reject(error); });
+  });
+  const recoveredCursor = messages.length;
+  socket.send(JSON.stringify({ type: 'auth', token: recoveredToken }));
+  const recoveredReady = await waitMessage(m => m.type === 'ready', recoveredCursor, 15_000, 'ready after browser crash');
+  assert(recoveredReady.activeTabId === recoveredTabId, 'Recovered viewer attached to the wrong tab.');
+  const recoveredNavCursor = messages.length;
+  const recoveredNav = await request(baseUrl, `/api/session/${recoveredId}/navigate`, {
+    method: 'POST', token: recoveredToken, body: { url: 'https://example.com/' }
+  });
+  assert(recoveredNav.res.ok, `Recovered browser navigation failed: HTTP ${recoveredNav.res.status} ${recoveredNav.raw}`);
+  await waitMessage(m => m.type === 'state' && m.tabId === recoveredTabId && m.url === 'https://example.com/', recoveredNavCursor, 20_000, 'recovered navigation state');
+  const recoveredFrame = await waitMessage(m => m.type === 'frame' && m.tabId === recoveredTabId && typeof m.data === 'string' && m.data.length > 1000, recoveredNavCursor, 20_000, 'recovered live frame');
+  const recoveredJpeg = Buffer.from(recoveredFrame.data, 'base64');
+  assert(recoveredJpeg[0] === 0xff && recoveredJpeg[1] === 0xd8, 'Recovered session did not emit a real JPEG frame.');
+  console.log('PASS recovered viewer authenticated, navigated and rendered a live browser frame');
+
+  const closed = await request(baseUrl, `/api/session/${recoveredId}`, { method: 'DELETE', token: recoveredToken });
+  assert(closed.res.ok && closed.data.status === 'closed', `Recovered session close failed: HTTP ${closed.res.status} ${closed.raw}`);
   session = null;
-  console.log('PASS session closes through the owned-session API');
-  console.log('E2E RESULT: PASS (local API + real Playwright browser + live CDP stream)');
+  console.log('PASS recovered session closes through the owned-session API');
+  console.log('E2E RESULT: PASS (local API + real browser + live CDP stream + simulated crash/recovery)');
 } catch (error) {
   console.error('E2E RESULT: FAIL');
   console.error(String(error?.stack || error));
