@@ -20,7 +20,7 @@ services:
     rootDir: backend
     plan: free
     region: frankfurt
-    healthCheckPath: /healthz
+    healthCheckPath: /health
     envVars:
       - key: PORT
         value: "10000"
