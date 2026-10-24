@@ -147,6 +147,15 @@ try {
   const { id, token, activeTabId } = session;
   console.log('PASS secure browser session created');
 
+  // The local test owns this server and sets MAX_SESSIONS=1. Test capacity here
+  // rather than opening an extra public-production session during parallel deploys.
+  const saturated = await request(baseUrl, '/api/session', { method: 'POST', body: {} });
+  if (saturated.res.status === 201 && saturated.data.id && saturated.data.token) {
+    await request(baseUrl, `/api/session/${saturated.data.id}`, { method: 'DELETE', token: saturated.data.token }).catch(() => {});
+  }
+  assert(saturated.res.status === 503, `Session capacity was not enforced: HTTP ${saturated.res.status} ${JSON.stringify(saturated.data)}`);
+  console.log('PASS concurrent session limit enforced');
+
   const unauthenticated = await request(baseUrl, `/api/session/${id}`);
   assert(unauthenticated.res.status === 401, `Session ownership check failed: HTTP ${unauthenticated.res.status}`);
   console.log('PASS session status is protected by ownership token');
