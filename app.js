@@ -175,35 +175,51 @@
       try{
         if(!api)throw Error('Remote browser service is not configured yet.');
         if(!session)session=await request('/api/sessions',{});
-        socket=new WebSocket(wsUrl());
-        socket.onopen=()=>{if(session)socket?.send(JSON.stringify({type:'auth',token:session.token}))};
-        socket.onmessage=e=>{
-          let m;try{m=JSON.parse(e.data)}catch{return}
-          if(m.type==='ready'){
-            retryCount=0;tabs=m.tabs||[];activeId=m.activeTabId;render();
-            status('Connected to remote Chromium');setProgress(false);
-          }else if(m.type==='frame'){
-            if(m.tabId===activeId){view.src=`data:image/jpeg;base64,${m.data}`;view.hidden=false;$('newtab').hidden=true;$('message').hidden=true}
-          }else if(m.type==='state'){
-            const t=tabs.find(t=>t.id===m.tabId);
-            if(t){Object.assign(t,m);renderTabs();if(m.tabId===activeId){$('address').value=m.url||'';status(m.loading?'Loading page…':'Connected');setProgress(m.loading);updateBookmarkButton();if(!m.loading)save()}}
-          }else if(m.type==='error'){
-            status(m.message||'Navigation failed');showRemoteError(m.message||'Navigation failed.');
-          }
-        };
-        socket.onerror=()=>{};
-        socket.onclose=e=>{
-          socket=null;
-          if(session&&(e.code===4401||e.code===4408)){
-            session=null;retryCount=0;status('Session expired — starting a fresh browser…');retryTimer=setTimeout(connect,500);
-          }else if(api&&retryCount<12){
-            retryCount++;
-            status('Connection interrupted — retry '+retryCount+' of 12…');
-            retryTimer=setTimeout(connect,Math.min(1_200*2**Math.max(0,retryCount-1),10_000));
-          }else statusError(Error('Connection lost after automatic retries. Check the backend service and try again.'));
-        };
+        await new Promise((resolve,reject)=>{
+          let ready=false;
+          const ws=socket=new WebSocket(wsUrl());
+          const readyTimer=setTimeout(()=>{
+            if(!ready){ws.close();reject(Error('The remote browser stream did not become ready in time.'))}
+          },18_000);
+          ws.onopen=()=>{if(session)ws.send(JSON.stringify({type:'auth',token:session.token}))};
+          ws.onerror=()=>{
+            if(!ready){clearTimeout(readyTimer);ws.close();reject(Error('Could not open the remote browser stream.'))}
+          };
+          ws.onmessage=e=>{
+            let m;try{m=JSON.parse(e.data)}catch{return}
+            if(m.type==='ready'){
+              ready=true;clearTimeout(readyTimer);retryCount=0;
+              tabs=m.tabs||[];activeId=m.activeTabId;render();
+              status('Connected to remote Chromium');setProgress(false);resolve();
+            }else if(m.type==='frame'){
+              if(m.tabId===activeId){view.src=`data:image/jpeg;base64,${m.data}`;view.hidden=false;$('newtab').hidden=true;$('message').hidden=true}
+            }else if(m.type==='state'){
+              const t=tabs.find(t=>t.id===m.tabId);
+              if(t){Object.assign(t,m);renderTabs();if(m.tabId===activeId){$('address').value=m.url||'';status(m.loading?'Loading page…':'Connected');setProgress(m.loading);updateBookmarkButton();if(!m.loading)save()}}
+            }else if(m.type==='error'){
+              status(m.message||'Navigation failed');showRemoteError(m.message||'Navigation failed.');
+            }
+          };
+          ws.onclose=e=>{
+            clearTimeout(readyTimer);
+            socket=null;
+            if(!ready){
+              if(session&&(e.code===4401||e.code===4408))session=null;
+              reject(Error(e.code===4401||e.code===4408?'The remote browser session expired while connecting.':'The remote browser stream disconnected before becoming ready.'));
+              return;
+            }
+            if(session&&(e.code===4401||e.code===4408)){
+              session=null;retryCount=0;status('Session expired — starting a fresh browser…');retryTimer=setTimeout(connect,500);
+            }else if(api&&retryCount<12){
+              retryCount++;
+              status('Connection interrupted — retry '+retryCount+' of 12…');
+              retryTimer=setTimeout(connect,Math.min(1_200*2**Math.max(0,retryCount-1),10_000));
+            }else statusError(Error('Connection lost after automatic retries. Check the backend service and try again.'));
+          };
+        });
       }catch(e){
-        if(api&&retryCount<12){
+        if(!api){statusError(e);return}
+        if(retryCount<12){
           retryCount++;
           status('Cloud browser is waking up — retry '+retryCount+' of 12…');
           setProgress(true);
