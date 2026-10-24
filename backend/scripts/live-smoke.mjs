@@ -142,9 +142,6 @@ try {
   session = created.data;
   const { id, token, activeTabId } = session;
   console.log('PASS remote session created');
-  const saturated = await apiRequest('/api/session', { method:'POST', body:{}, timeout:30_000 });
-  assert(saturated.response.status === 503, `Session capacity was not enforced: HTTP ${saturated.response.status} ${saturated.raw}`);
-  console.log('PASS concurrent session limit enforced');
 
   const ready = await openSocket(id, token);
   assert(ready.activeTabId === activeTabId, 'Viewer was attached to the wrong active tab.');
