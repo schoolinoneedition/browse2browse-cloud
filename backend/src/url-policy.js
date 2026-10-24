@@ -14,7 +14,7 @@ export function isPublicIp(input) {
 }
 
 export function hostShapeAllowed(host) {
-  const h = String(host || '').toLowerCase().replace(/^\\[|\\]$/g, '').replace(/\\.$/, '');
+  const h = String(host || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
   if (!h || h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal') ||
       h.endsWith('.home.arpa') || h === 'metadata' || h === 'metadata.google.internal' || h === 'host.docker.internal' ||
       h === 'instance-data' || h === 'kubernetes.default.svc') return false;
