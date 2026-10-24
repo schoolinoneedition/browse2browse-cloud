@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hostShapeAllowed, isPublicIp, validateUrl } from '../src/url-policy.js';
+import { createDnsCachedLookup, hostShapeAllowed, isPublicIp, validateUrl } from '../src/url-policy.js';
 
 test('allows only public unicast IP addresses', () => {
   assert.equal(isPublicIp('8.8.8.8'), true);
@@ -49,6 +49,39 @@ test('accepts a public bracketed IPv6 literal', async () => {
 test('blocks a hostname if any DNS answer is non-public', async () => {
   await assert.rejects(
     validateUrl('https://example.test', { lookup: async () => [{ address: '93.184.216.34' }, { address: '127.0.0.1' }] }),
+    /private or non-public/
+  );
+});
+
+test('short DNS cache coalesces repeated public subresource lookups', async () => {
+  let calls = 0;
+  const lookup = createDnsCachedLookup(async () => {
+    calls++;
+    await new Promise(resolve => setTimeout(resolve, 5));
+    return [{ address: '93.184.216.34', family: 4 }];
+  }, { ttlMs: 1_000, maxEntries: 4 });
+
+  const [first, second] = await Promise.all([
+    validateUrl('https://example.test/a.js', { lookup }),
+    validateUrl('https://EXAMPLE.test/b.css', { lookup })
+  ]);
+  assert.equal(first, 'https://example.test/a.js');
+  assert.equal(second, 'https://example.test/b.css');
+  await validateUrl('https://example.test/logo.png', { lookup });
+  assert.equal(calls, 1);
+});
+
+test('DNS cache never makes a private answer public', async () => {
+  const lookup = createDnsCachedLookup(async () => [
+    { address: '93.184.216.34', family: 4 },
+    { address: '127.0.0.1', family: 4 }
+  ], { ttlMs: 1_000 });
+  await assert.rejects(
+    validateUrl('https://mixed.example.test/asset.js', { lookup }),
+    /private or non-public/
+  );
+  await assert.rejects(
+    validateUrl('https://mixed.example.test/next.css', { lookup }),
     /private or non-public/
   );
 });

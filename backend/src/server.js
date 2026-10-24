@@ -3,12 +3,16 @@ import crypto from 'node:crypto';
 import { URL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { chromium } from 'playwright';
-import { validateUrl } from './url-policy.js';
+import { validateUrl, createDnsCachedLookup } from './url-policy.js';
 
 const PORT = Number(process.env.PORT || 10000);
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 30 * 60 * 1000);
 const MAX_SESSIONS = Math.max(1, Number(process.env.MAX_SESSIONS || 1));
 const MAX_TABS = Math.max(1, Number(process.env.MAX_TABS || 6));
+const STREAM_QUALITY = 76;
+const STREAM_EVERY_NTH_FRAME = 1;
+const FRAME_BUFFER_LIMIT = 450_000;
+const subresourceDnsLookup = createDnsCachedLookup(undefined, { ttlMs: 5_000, maxEntries: 256 });
 const allowedOrigins = new Set((process.env.ALLOWED_ORIGINS || 'http://localhost:5173,https://schoolinoneedition.github.io').split(',').map(x => x.trim()).filter(Boolean));
 const sessions = new Map();
 const rateBuckets = new Map();
@@ -133,7 +137,7 @@ function emit(session, message) {
     if (peer.readyState !== WebSocket.OPEN || !peer.authenticated) continue;
     // Do not let a slow viewer grow an unbounded WebSocket send queue.
     // Drop stale video frames only; browser state/errors are never dropped.
-    if (message.type === 'frame' && peer.bufferedAmount > 1_500_000) continue;
+    if (message.type === 'frame' && peer.bufferedAmount > FRAME_BUFFER_LIMIT) continue;
     peer.send(data);
   }
 }
@@ -214,7 +218,7 @@ async function createTab(session) {
 async function stopStream(tab) {
   if (tab?.cdp) await tab.cdp.send('Page.stopScreencast').catch(() => {});
 }
-async function startStream(session, tab) {
+async function startStream(session, tab, { sendKeyframe = true } = {}) {
   if (!tab || tab.page.isClosed()) {
     throw Object.assign(new Error('The browser tab is no longer available.'), { statusCode: 503 });
   }
@@ -228,10 +232,10 @@ async function startStream(session, tab) {
     } catch {}
     try {
       await tab.cdp.send('Page.startScreencast', {
-        format: 'jpeg', quality: 60, maxWidth: 1920, maxHeight: 1200, everyNthFrame: 2
+        format: 'jpeg', quality: STREAM_QUALITY, maxWidth: 1920, maxHeight: 1200, everyNthFrame: STREAM_EVERY_NTH_FRAME
       });
       await updateTab(tab);
-      await sendViewerKeyframe(session, tab);
+      if (sendKeyframe) await sendViewerKeyframe(session, tab);
       log('browser_stream_restarted', { sessionId: session.id, tabId: tab.id });
       return;
     } catch (error) {
@@ -254,10 +258,10 @@ async function startStream(session, tab) {
       await tab.cdp.send('Page.enable');
     }
     await tab.cdp.send('Page.startScreencast', {
-      format: 'jpeg', quality: 60, maxWidth: 1920, maxHeight: 1200, everyNthFrame: 2
+      format: 'jpeg', quality: STREAM_QUALITY, maxWidth: 1920, maxHeight: 1200, everyNthFrame: STREAM_EVERY_NTH_FRAME
     });
     await updateTab(tab);
-    await sendViewerKeyframe(session, tab);
+    if (sendKeyframe) await sendViewerKeyframe(session, tab);
   } catch (error) {
     log('browser_stream_start_failed', { tabId: tab.id, error: String(error?.message || error).slice(0, 180) });
     throw Object.assign(new Error('The live browser stream could not be started. Restart the session and try again.'), { statusCode: 503 });
@@ -270,7 +274,7 @@ async function sendViewerKeyframe(session, tab) {
     // This is only a keyframe: continued interaction and updates still require the
     // native CDP screencast started by startStream (there is no screenshot-only mode).
     const captured = await tab.cdp.send('Page.captureScreenshot', {
-      format: 'jpeg', quality: 72, fromSurface: true
+      format: 'jpeg', quality: 78, fromSurface: true
     });
     const viewport = tab.page.viewportSize() || { width: 1280, height: 800 };
     emit(session, {
@@ -293,16 +297,23 @@ async function installNetworkPolicy(context) {
   // Re-check network requests, including redirects and subresources. Public-IP checks
   // are defense in depth; host-level egress controls are still recommended.
   await context.route('**/*', async route => {
-    const requested = route.request().url();
+    const request = route.request();
+    const requested = request.url();
     if (/^(about:|data:|blob:)/i.test(requested)) { await route.continue(); return; }
-    try { await validateUrl(requested); await route.continue(); }
-    catch { await route.abort('blockedbyclient').catch(() => {}); }
+    try {
+      // Re-resolve each navigation/redirect. Static subresources reuse public DNS answers
+      // for only five seconds, avoiding repeated DNS lookups for every image/script/font.
+      if (request.isNavigationRequest()) await validateUrl(requested);
+      else await validateUrl(requested, { lookup: subresourceDnsLookup });
+      await route.continue();
+    } catch { await route.abort('blockedbyclient').catch(() => {}); }
   });
   if (typeof context.routeWebSocket === 'function') {
     await context.routeWebSocket('**/*', async route => {
       try {
         const checked = route.url().replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
-        await validateUrl(checked); await route.connect();
+        await validateUrl(checked, { lookup: subresourceDnsLookup });
+        await route.connect();
       } catch { route.close({ code: 1008, reason: 'Blocked by network policy' }); }
     });
   }
@@ -359,8 +370,6 @@ async function handleHttp(req, res) {
     try {
       const browser = await ensureBrowser();
       if (!browser.isConnected()) throw new Error('Browser process is not connected.');
-      const context = await browser.newContext({ viewport: { width: 320, height: 240 } });
-      try { await context.newPage(); } finally { await context.close(); }
       return json(res, 200, { ok: true, status: 'ok', browser: 'connected', runtime: 'playwright-chromium', activeSessions: sessions.size, maxSessions: MAX_SESSIONS });
     } catch (error) {
       return json(res, 503, { ok: false, status: 'degraded', browser: 'unavailable', error: String(error?.message || error).slice(0, 240) });
@@ -586,7 +595,7 @@ wss.on('connection', (ws, req) => {
           // Do not confirm readiness until native CDP screencasting is active.
           // Add the peer before starting the stream so it cannot miss initial frames.
           session.peers.add(ws);
-          await startStream(session, tab);
+          await startStream(session, tab, { sendKeyframe: false });
           session.status = 'ready';
           ws.send(JSON.stringify({
             type: 'ready',
@@ -686,7 +695,12 @@ const sweep = setInterval(async () => {
   for (const [key, bucket] of rateBuckets) if (bucket.until < now) rateBuckets.delete(key);
 }, 15_000);
 sweep.unref();
-server.listen(PORT, '0.0.0.0', () => log('server_ready', { port: PORT, maxSessions: MAX_SESSIONS }));
+server.listen(PORT, '0.0.0.0', () => {
+  log('server_ready', { port: PORT, maxSessions: MAX_SESSIONS });
+  ensureBrowser()
+    .then(() => log('browser_prewarm_ready'))
+    .catch(error => log('browser_prewarm_failed', { error: String(error?.message || error).slice(0, 200) }));
+});
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, async () => {
   clearInterval(sweep);
   for (const session of [...sessions.values()]) await closeSession(session, 'Server shutting down');

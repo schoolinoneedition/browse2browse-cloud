@@ -7,6 +7,8 @@
   <meta name="description" content="Browse2Browse Cloud — an isolated, interactive Chromium browser running remotely.">
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="preconnect" href="https://browse2browse-cloud-backend.onrender.com" crossorigin>
+  <link rel="dns-prefetch" href="//browse2browse-cloud-backend.onrender.com">
   <link rel="stylesheet" href="./styles.css?v=8">
   <title>Browse2Browse Cloud</title>
 </head>
@@ -66,8 +68,7 @@
       <div class="settings-foot"><p>Account data is stored in isolated <code>browser2browse_*</code> tables. Browser cookies and session tokens are never synced.</p><button id="clearSession" class="text-button danger" type="button">End remote session</button><button id="clearData" class="text-button danger" type="button">Clear local browser data</button></div>
     </aside>
   </main>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
-  <script src="./config.js"></script>
-  <script src="./app.js?v=15" defer></script>
+  <script src="./config.js" defer></script>
+  <script src="./app.js?v=16" defer></script>
 </body>
 </html>

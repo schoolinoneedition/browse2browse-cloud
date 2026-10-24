@@ -3,7 +3,7 @@
   const $ = id => document.getElementById(id);
   const engines = {duckduckgo:q=>`https://duckduckgo.com/?q=${q}`,google:q=>`https://www.google.com/search?q=${q}`,bing:q=>`https://www.bing.com/search?q=${q}`,brave:q=>`https://search.brave.com/search?q=${q}`,yahoo:q=>`https://search.yahoo.com/search?p=${q}`};
   const defaults={engine:'duckduckgo',homepage:'',theme:'system',layout:'comfortable',animations:true};
-  let prefs={...defaults,...read('b2b-settings',{})}, session=null, socket=null, tabs=[], activeId=null, retryTimer=null, retryCount=0, dragId=null, connectPromise=null, recoveryPromise=null, resizeTimer=null;
+  let prefs={...defaults,...read('b2b-settings',{})}, session=null, socket=null, tabs=[], activeId=null, retryTimer=null, retryCount=0, dragId=null, connectPromise=null, recoveryPromise=null, resizeTimer=null, supabaseLoadPromise=null, supabaseInitPromise=null, pendingFrame=null, framePaintScheduled=false;
   let bookmarks=read('b2b-bookmarks',[]), supabaseClient=null, cloudUser=null, cloudLastUserId=null, cloudSaveTimer=null, cloudHydrating=false;
   if(!Array.isArray(bookmarks))bookmarks=[];
   const api=(window.B2B_CONFIG?.apiBase||'').replace(/\/$/,'');
@@ -20,11 +20,13 @@
   function status(s){$('statusText').textContent=s}
   function cloudStatus(message){const node=$('syncStatus');if(node)node.textContent=message}
   function updateSyncUI(){
-    const configured=!!supabaseClient;
-    $('syncSignIn').disabled=!configured||!!cloudUser;
+    const cfg=window.B2B_CONFIG||{};
+    const configured=!!(cfg.supabaseUrl&&cfg.supabasePublishableKey);
+    $('syncSignIn').disabled=!configured||!supabaseClient||!!cloudUser;
     $('syncSignOut').hidden=!configured||!cloudUser;
-    $('syncEmail').disabled=!configured||!!cloudUser;
+    $('syncEmail').disabled=!configured||!supabaseClient||!!cloudUser;
     if(!configured)cloudStatus('Local-only mode. Add your Supabase project URL and publishable key in config.js to enable account sync.');
+    else if(!supabaseClient)cloudStatus('Account sync loads when you open Settings.');
     else if(cloudUser)cloudStatus('Signed in as '+(cloudUser.email||'your account')+'. Syncing preferences, bookmarks and recent sites.');
     else cloudStatus('Sign in by email to sync preferences, bookmarks and recent sites across devices.');
   }
@@ -131,16 +133,47 @@
     cloudUser=next;cloudLastUserId=nextId;updateSyncUI();
     if(changed&&cloudUser)queueMicrotask(()=>loadCloudData(cloudUser.id));
   }
+  function loadSupabaseSdk(){
+    if(window.supabase?.createClient)return Promise.resolve(window.supabase);
+    if(supabaseLoadPromise)return supabaseLoadPromise;
+    supabaseLoadPromise=new Promise((resolve,reject)=>{
+      const script=document.createElement('script');
+      script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+      script.async=true;
+      script.onload=()=>{
+        if(window.supabase?.createClient)resolve(window.supabase);
+        else reject(Error('Account sync library loaded without its client.'));
+      };
+      script.onerror=()=>reject(Error('Could not load the optional account-sync library.'));
+      document.head.append(script);
+    }).catch(error=>{supabaseLoadPromise=null;throw error});
+    return supabaseLoadPromise;
+  }
   async function initSupabase(){
     const cfg=window.B2B_CONFIG||{};
-    if(!cfg.supabaseUrl||!cfg.supabasePublishableKey||!window.supabase?.createClient){updateSyncUI();return}
-    try{
-      supabaseClient=window.supabase.createClient(cfg.supabaseUrl,cfg.supabasePublishableKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
-      supabaseClient.auth.onAuthStateChange((_event,session)=>setCloudSession(session));
-      const {data,error}=await supabaseClient.auth.getSession();
-      if(error)throw error;
-      setCloudSession(data.session);
-    }catch(error){supabaseClient=null;cloudStatus('Supabase could not initialise: '+(error?.message||'Check the project URL and publishable key.'));$('syncSignIn').disabled=true}
+    if(!cfg.supabaseUrl||!cfg.supabasePublishableKey){updateSyncUI();return}
+    if(supabaseClient)return;
+    if(supabaseInitPromise)return supabaseInitPromise;
+    cloudStatus('Loading account sync…');
+    $('syncSignIn').disabled=true;
+    supabaseInitPromise=(async()=>{
+      try{
+        if(!window.supabase?.createClient)await loadSupabaseSdk();
+        supabaseClient=window.supabase.createClient(cfg.supabaseUrl,cfg.supabasePublishableKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
+        supabaseClient.auth.onAuthStateChange((_event,session)=>setCloudSession(session));
+        const {data,error}=await supabaseClient.auth.getSession();
+        if(error)throw error;
+        setCloudSession(data.session);
+      }catch(error){
+        supabaseClient=null;
+        cloudStatus('Supabase could not initialise: '+(error?.message||'Check the project URL and publishable key.'));
+        $('syncSignIn').disabled=true;
+      }finally{
+        supabaseInitPromise=null;
+        updateSyncUI();
+      }
+    })();
+    return supabaseInitPromise;
   }
   async function signInToSync(){
     if(!supabaseClient)return;
@@ -164,7 +197,23 @@
   function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
   function urlFor(raw){let s=raw.trim();if(!s)return {error:'Enter a website or search query.'};if(/\s/.test(s)||(!s.includes('.')&&!/^https?:\/\//i.test(s)))return {url:engines[prefs.engine](encodeURIComponent(s))};if(!/^https?:\/\//i.test(s))s='https://'+s;try{const u=new URL(s);if(!['http:','https:'].includes(u.protocol)||!u.hostname||u.username||u.password)return {error:'Enter a valid HTTP or HTTPS address.'};return {url:u.href}}catch{return {error:'That address is not valid. Check it and try again.'}}
   }
-  async function request(path,body,method='POST'){if(!api)throw Error('Remote browser service is not configured yet.');if(session&&path==='/api/tabs')path=`/api/sessions/${session.id}/tabs`;else if(session&&path.startsWith('/api/tabs/'))path=`/api/sessions/${session.id}${path.slice(4)}`;const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(new DOMException('Request timed out.','TimeoutError')),25_000);try{const r=await fetch(api+path,{method,headers:{'content-type':'application/json','authorization':session?`Bearer ${session.token}`:''},body:body===undefined?undefined:JSON.stringify(body),signal:controller.signal});const j=await r.json().catch(()=>({}));if(!r.ok){const error=Error(j.error||`Service request failed (${r.status}).`);error.status=r.status;throw error}return j}catch(e){if(e?.name==='AbortError'||e?.name==='TimeoutError')throw Error('The cloud browser took too long to respond. Retrying automatically…');throw e}finally{clearTimeout(timeout)}}
+  async function request(path,body,method='POST'){
+    if(!api)throw Error('Remote browser service is not configured yet.');
+    if(session&&path==='/api/tabs')path=`/api/sessions/${session.id}/tabs`;
+    else if(session&&path.startsWith('/api/tabs/'))path=`/api/sessions/${session.id}${path.slice(4)}`;
+    const controller=new AbortController();
+    const requestTimeoutMs=method==='POST'&&(path==='/api/sessions'||path==='/api/session')?90_000:25_000;
+    const timeout=setTimeout(()=>controller.abort(new DOMException('Request timed out.','TimeoutError')),requestTimeoutMs);
+    try{
+      const r=await fetch(api+path,{method,headers:{'content-type':'application/json','authorization':session?`Bearer ${session.token}`:''},body:body===undefined?undefined:JSON.stringify(body),signal:controller.signal});
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok){const error=Error(j.error||`Service request failed (${r.status}).`);error.status=r.status;throw error}
+      return j;
+    }catch(e){
+      if(e?.name==='AbortError'||e?.name==='TimeoutError')throw Error('The cloud browser took too long to respond. Retrying automatically…');
+      throw e;
+    }finally{clearTimeout(timeout)}
+  }
   function statusError(e){$('newtab').hidden=true;view.hidden=true;$('message').hidden=false;$('message').innerHTML=`<div class="message-card"><div class="message-symbol">!</div><h2>Remote browser unavailable</h2><p>${esc(e.message||'The remote browser service could not be reached.')}</p><p class="host">${api?'The cloud browser could not connect. It may be starting, restarting, or offline, waking up, or not deployed yet.':'The cloud browser endpoint has not been configured yet.'}</p><div class="message-actions"><button class="primary-button" id="retryConnect">Try again</button><a class="secondary-button" href="https://github.com/schoolinoneedition/browse2browse-cloud" target="_blank" rel="noopener">Setup guide ↗</a></div></div>`;$('retryConnect').onclick=()=>{retryCount=0;connect()};status('Service unavailable');setProgress(false)}
   async function connect(){
     if(connectPromise)return connectPromise;
@@ -194,13 +243,23 @@
               resizeRemoteViewport();resolve();
             }else if(m.type==='frame'){
               if(m.tabId===activeId){
-                // A fresh remote tab starts at about:blank. Keep the useful welcome page visible
-                // until the active tab has navigated to a real HTTP(S) page.
-                const current=active();
-                if(current?.url&&/^https?:\/\//i.test(current.url)){
-                  view.src=`data:image/jpeg;base64,${m.data}`;view.hidden=false;$('newtab').hidden=true;$('message').hidden=true;
+                // Keep only the newest frame while the display catches up. This avoids
+                // spending Chromebook CPU decoding frames that are already out of date.
+                pendingFrame=m;
+                if(!framePaintScheduled){
+                  framePaintScheduled=true;
+                  requestAnimationFrame(()=>{
+                    framePaintScheduled=false;
+                    const latest=pendingFrame;
+                    pendingFrame=null;
+                    if(!latest||latest.tabId!==activeId)return;
+                    const current=active();
+                    if(current?.url&&/^https?:\\/\\//i.test(current.url)){
+                      view.src=`data:image/jpeg;base64,${latest.data}`;
+                      view.hidden=false;$('newtab').hidden=true;$('message').hidden=true;
+                    }
+                  });
                 }
-              }
             }else if(m.type==='state'){
               const t=tabs.find(t=>t.id===m.tabId);
               if(t){Object.assign(t,m);renderTabs();if(m.tabId===activeId){$('address').value=m.url||'';status(m.loading?'Loading page…':'Connected');setProgress(m.loading);updateBookmarkButton();if(!m.loading)save()}}
@@ -218,20 +277,20 @@
             }
             if(session&&(e.code===4401||e.code===4408)){
               session=null;retryCount=0;status('Session expired — starting a fresh browser…');retryTimer=setTimeout(connect,500);
-            }else if(api&&retryCount<4){
+            }else if(api&&retryCount<6){
               retryCount++;
               status('Connection interrupted — retry '+retryCount+' of 4…');
-              retryTimer=setTimeout(connect,Math.min(1_000*2**Math.max(0,retryCount-1),8_000));
+              retryTimer=setTimeout(connect,Math.min(1_000*2**Math.max(0,retryCount-1),12_000));
             }else statusError(Error('Connection lost after automatic retries. Check the backend service and try again.'));
           };
         });
       }catch(e){
         if(!api){statusError(e);return}
-        if(retryCount<4){
+        if(retryCount<6){
           retryCount++;
           status('Cloud browser is waking up — retry '+retryCount+' of 4…');
           setProgress(true);
-          retryTimer=setTimeout(connect,Math.min(1_000*2**Math.max(0,retryCount-1),8_000));
+          retryTimer=setTimeout(connect,Math.min(1_000*2**Math.max(0,retryCount-1),12_000));
         }else statusError(e);
       }
     })();
@@ -436,7 +495,7 @@
     send({type:'key',tabId:activeId,key:e.key,code:e.code,modifiers:{alt:e.altKey,ctrl:e.ctrlKey,meta:e.metaKey,shift:e.shiftKey}});
   });
   $('addressForm').onsubmit=e=>{e.preventDefault();navigate($('address').value)};$('clearAddress').onclick=()=>{$('address').value='';$('address').focus()};$('back').onclick=()=>go('back');$('forward').onclick=()=>go('forward');$('reload').onclick=()=>go('reload');$('stop').onclick=()=>go('stop');$('home').onclick=()=>prefs.homepage?navigate(prefs.homepage):(tabs.find(t=>!t.url)?activate(tabs.find(t=>!t.url).id):newTab());$('newTab').onclick=newTab;$('bookmark').onclick=toggleBookmark;
-  $('settingsToggle').onclick=()=>{$('settingsPanel').hidden=!$('settingsPanel').hidden};$('closeSettings').onclick=()=>$('settingsPanel').hidden=true;$('fullscreen').onclick=async()=>{try{if(!document.fullscreenElement)await $('browser').requestFullscreen();else await document.exitFullscreen()}catch{status('Fullscreen is not available here')}};document.addEventListener('fullscreenchange',()=>$('fullscreen').title=document.fullscreenElement?'Exit fullscreen':'Fullscreen');
+  $('settingsToggle').onclick=()=>{$('settingsPanel').hidden=!$('settingsPanel').hidden;if(!$('settingsPanel').hidden)initSupabase()};$('closeSettings').onclick=()=>$('settingsPanel').hidden=true;$('fullscreen').onclick=async()=>{try{if(!document.fullscreenElement)await $('browser').requestFullscreen();else await document.exitFullscreen()}catch{status('Fullscreen is not available here')}};document.addEventListener('fullscreenchange',()=>$('fullscreen').title=document.fullscreenElement?'Exit fullscreen':'Fullscreen');
   $('engine').value=prefs.engine;$('homepage').value=prefs.homepage;$('theme').value=prefs.theme;if($('layout'))$('layout').value=prefs.layout;if($('animations'))$('animations').checked=prefs.animations;$('engine').onchange=e=>{prefs.engine=e.target.value;save()};$('homepage').onchange=e=>{prefs.homepage=e.target.value.trim();save()};$('theme').onchange=e=>{prefs.theme=e.target.value;save();render()};if($('layout'))$('layout').onchange=e=>{prefs.layout=e.target.value;save();render()};if($('animations'))$('animations').onchange=e=>{prefs.animations=e.target.checked;save();render()};$('syncSignIn').onclick=signInToSync;$('syncSignOut').onclick=signOutOfSync;$('clearData').onclick=async()=>{if(confirm('Clear local preferences, recent sites, bookmarks, and the remote browser session?')){if(supabaseClient&&cloudUser){const cleared=await Promise.all([supabaseClient.from('browser2browse_bookmarks').delete().eq('user_id',cloudUser.id),supabaseClient.from('browser2browse_history').delete().eq('user_id',cloudUser.id)]);const failure=cleared.find(x=>x.error);if(failure)cloudStatus('Some XBT cloud history could not be cleared: '+failure.error.message)}localStorage.removeItem('b2b-settings');localStorage.removeItem('b2b-recent');localStorage.removeItem('b2b-bookmarks');bookmarks=[];if(session)await request('/api/sessions/'+session.id,undefined,'DELETE').catch(()=>{});if(socket)socket.onclose=null;socket?.close();socket=null;session=null;tabs=[];activeId=null;prefs={...defaults};save();render();renderBookmarks();connect()}};
   $('clearHistory').onclick=()=>{try{localStorage.setItem('b2b-recent','[]')}catch{};if(supabaseClient&&cloudUser)supabaseClient.from('browser2browse_history').delete().eq('user_id',cloudUser.id).then(({error})=>{if(error)cloudStatus('Local history cleared; cloud history could not be cleared: '+error.message)});renderHome();$('historyList').innerHTML='<p class="empty-state">No recent sites yet.</p>';save();status('Recent sites cleared.')};
   $('clearSession').onclick=async()=>{if(session){await request('/api/sessions/'+session.id,undefined,'DELETE').catch(()=>{});session=null}socket?.close();socket=null;tabs=[];activeId=null;render();status('Remote session ended.');connect()};
@@ -450,6 +509,6 @@
   const viewportObserver=new ResizeObserver(()=>resizeRemoteViewport());
   viewportObserver.observe($('viewport'));
   window.addEventListener('resize',resizeRemoteViewport,{passive:true});
-  renderHome();renderBookmarks();$('newtab').hidden=false;initSupabase();connect();
+  renderHome();renderBookmarks();$('newtab').hidden=false;updateSyncUI();connect();
 })();
 

@@ -3,6 +3,51 @@ import net from 'node:net';
 import { URL } from 'node:url';
 import ipaddr from 'ipaddr.js';
 
+export function createDnsCachedLookup(lookup = dns.lookup, { ttlMs = 5_000, maxEntries = 256 } = {}) {
+  const cache = new Map();
+  const inflight = new Map();
+  const ttl = Number.isFinite(Number(ttlMs)) ? Math.max(0, Number(ttlMs)) : 5_000;
+  const limit = Number.isFinite(Number(maxEntries)) ? Math.max(1, Math.floor(Number(maxEntries))) : 256;
+
+  return async (host, options) => {
+    const key = String(host || '').toLowerCase().replace(/\\.$/, '');
+    const now = Date.now();
+    const cached = cache.get(key);
+    if (cached && cached.expiresAt > now) {
+      cache.delete(key);
+      cache.set(key, cached);
+      return cached.records.map(record => ({ ...record }));
+    }
+    if (cached) cache.delete(key);
+
+    const pending = inflight.get(key);
+    if (pending) return (await pending).map(record => ({ ...record }));
+
+    const task = Promise.resolve().then(() => lookup(host, options)).then(records => {
+      if (Array.isArray(records) && records.length && ttl > 0) {
+        const time = Date.now();
+        for (const [entry, item] of cache) {
+          if (item.expiresAt <= time) cache.delete(entry);
+        }
+        while (cache.size >= limit) {
+          const oldest = cache.keys().next().value;
+          if (oldest === undefined) break;
+          cache.delete(oldest);
+        }
+        cache.set(key, { records: records.map(record => ({ ...record })), expiresAt: time + ttl });
+      }
+      return records;
+    });
+    inflight.set(key, task);
+    try {
+      return (await task).map(record => ({ ...record }));
+    } finally {
+      if (inflight.get(key) === task) inflight.delete(key);
+    }
+  };
+}
+
+
 export function isPublicIp(input) {
   try {
     let address = ipaddr.parse(input);
