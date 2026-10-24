@@ -65,7 +65,7 @@ async function waitForPublicServices() {
           fixture: fixture.status,
           backendHealth: health.status
         };
-        servicesReady = home.ok && homeText.includes('Browse2Browse Cloud') && homeText.includes('app.js?v=11')
+        servicesReady = home.ok && homeText.includes('Browse2Browse Cloud') && homeText.includes('app.js?v=12')
           && fixture.ok && fixtureText.includes('Remote Browser Test') && health.ok;
         if (!servicesReady) {
           await sleep(10_000);
@@ -265,7 +265,8 @@ try {
   let uiPrimaryError = null;
   try {
     uiBrowser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
-    uiPage = await uiBrowser.newPage({ viewport: { width: 1440, height: 1000 } });
+    // Chromebook-like viewport: the app must use the whole browser tab, not a card.
+    uiPage = await uiBrowser.newPage({ viewport: { width: 1366, height: 768 } });
     uiPage.setDefaultTimeout(20_000);
     uiPage.on('pageerror', error => pageErrors.push(String(error?.message || error)));
     uiPage.on('console', message => {
@@ -298,6 +299,24 @@ try {
     const homepage = await uiPage.goto(frontend + '/', { waitUntil: 'domcontentloaded', timeout: 30_000 });
     assert(homepage?.status() === 200, `Frontend homepage did not return HTTP 200: ${homepage?.status()}`);
     assert((await uiPage.title()).includes('Browse2Browse'), 'Frontend title was not rendered.');
+    const viewportLayout = await uiPage.evaluate(() => {
+      const rect = document.querySelector('#browser')?.getBoundingClientRect();
+      return {
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        browserWidth: rect?.width || 0,
+        browserHeight: rect?.height || 0,
+        bodyScrollWidth: document.body.scrollWidth,
+        bodyScrollHeight: document.body.scrollHeight
+      };
+    });
+    assert(Math.abs(viewportLayout.browserWidth - viewportLayout.viewportWidth) <= 1
+      && Math.abs(viewportLayout.browserHeight - viewportLayout.viewportHeight) <= 1,
+      `Browser UI did not fill the whole tab: ${JSON.stringify(viewportLayout)}`);
+    assert(viewportLayout.bodyScrollWidth <= viewportLayout.viewportWidth + 1
+      && viewportLayout.bodyScrollHeight <= viewportLayout.viewportHeight + 1,
+      `Unexpected page overflow on Chromebook-sized viewport: ${JSON.stringify(viewportLayout)}`);
+    console.log('PASS full-tab layout fits a Chromebook-like 1366×768 viewport');
     try {
       await uiPage.waitForFunction(() => document.querySelector('#statusText')?.textContent.includes('Connected'), null, { timeout: 60_000 });
     } catch (error) {
