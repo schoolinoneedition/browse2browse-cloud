@@ -211,6 +211,20 @@ try {
   assert(invalid.res.status === 400, `Unsafe URL was not rejected: HTTP ${invalid.res.status} ${invalid.raw}`);
   console.log('PASS unsafe URL rejection');
 
+  // Use the repository's real public fixture so the backend's public-destination
+  // policy stays enabled. This page has a text input, click target and scroll area.
+  const fixtureUrl = new URL('/smoke-fixture.html',
+    process.env.B2B_FRONTEND_URL || 'https://browse2browse-cloud.onrender.com').href;
+  const fixtureNavigation = await request(baseUrl, `/api/session/${id}/navigate`, {
+    method: 'POST', token, body: { url: fixtureUrl }
+  });
+  assert(fixtureNavigation.res.ok,
+    `Could not open the interactive public fixture: HTTP ${fixtureNavigation.res.status} ${fixtureNavigation.raw}`);
+  const fixtureState = await waitSessionUrl(baseUrl, id, token, 'smoke-fixture.html');
+  assert(fixtureState.tab.title.includes('Remote Browser Test'),
+    `Unexpected interaction fixture title: ${fixtureState.tab.title}`);
+  console.log('PASS interactive browser fixture loaded');
+
   const clickRemote = (x, y) => {
     socket.send(JSON.stringify({ type: 'input', tabId: activeTabId, event: 'mouseMoved', x, y, button: 0 }));
     socket.send(JSON.stringify({ type: 'input', tabId: activeTabId, event: 'mousePressed', x, y, button: 0 }));
