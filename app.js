@@ -22,6 +22,13 @@
     if(socket?.readyState===WebSocket.OPEN)send({type:'streamProfile',profile,tabId:activeId});
     return profile;
   }
+  function updateConnectionProfile(profile){
+    activeStreamProfile=profile||'balanced';
+    const labels={smooth:'Smooth · low-power',balanced:'Balanced',sharp:'Sharp'};
+    const connection=$('connectionText'),dot=$('connectionDot');
+    if(connection)connection.textContent='Live · '+(labels[activeStreamProfile]||'Balanced');
+    if(dot)dot.classList.add('connected');
+  }
   function read(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}}
   function save(){
     try{
@@ -252,7 +259,7 @@
             let m;try{m=JSON.parse(e.data)}catch{return}
             if(m.type==='ready'){
               ready=true;clearTimeout(readyTimer);retryCount=0;
-              tabs=m.tabs||[];activeId=m.activeTabId;activeStreamProfile=m.streamProfile||preferredStreamProfile();render();
+              tabs=m.tabs||[];activeId=m.activeTabId;updateConnectionProfile(m.streamProfile||preferredStreamProfile());render();
               status('Connected to remote Chromium');setProgress(false);
               resizeRemoteViewport();resolve();
             }else if(m.type==='frame'){
@@ -276,7 +283,7 @@
                 }
               }
             }else if(m.type==='streamProfile'){
-              activeStreamProfile=m.profile||activeStreamProfile;
+              updateConnectionProfile(m.profile||activeStreamProfile);
             }else if(m.type==='state'){
               const t=tabs.find(t=>t.id===m.tabId);
               if(t){Object.assign(t,m);renderTabs();if(m.tabId===activeId){$('address').value=m.url||'';status(m.loading?'Loading page…':'Connected');setProgress(m.loading);updateBookmarkButton();if(!m.loading)save()}}
@@ -521,13 +528,13 @@
   view.addEventListener('keydown',e=>{
     const key=e.key.toLowerCase(),mod=e.ctrlKey||e.metaKey;
     // These shortcuts belong to the Browse2Browse UI, not the remote page.
-    if(mod&&['t','w','l','r','d','s'].includes(key)||e.key==='F5'||e.key==='F11')return;
+    if((mod&&['t','w','l','r','d','s','tab'].includes(key))||e.key==='F5'||e.key==='F11'||e.key==='Escape')return;
     if(e.key==='Tab')e.preventDefault();
     send({type:'key',tabId:activeId,key:e.key,code:e.code,modifiers:{alt:e.altKey,ctrl:e.ctrlKey,meta:e.metaKey,shift:e.shiftKey}});
   });
   $('addressForm').onsubmit=e=>{e.preventDefault();navigate($('address').value)};$('clearAddress').onclick=()=>{$('address').value='';$('address').focus()};$('back').onclick=()=>go('back');$('forward').onclick=()=>go('forward');$('reload').onclick=()=>go('reload');$('stop').onclick=()=>go('stop');$('home').onclick=()=>prefs.homepage?navigate(prefs.homepage):(tabs.find(t=>!t.url)?activate(tabs.find(t=>!t.url).id):newTab());$('newTab').onclick=newTab;$('bookmark').onclick=toggleBookmark;
   $('settingsToggle').onclick=()=>{$('settingsPanel').hidden=!$('settingsPanel').hidden;if(!$('settingsPanel').hidden)initSupabase()};$('closeSettings').onclick=()=>$('settingsPanel').hidden=true;$('fullscreen').onclick=toggleFullscreen;document.addEventListener('fullscreenchange',()=>$('fullscreen').title=document.fullscreenElement?'Exit fullscreen':'Fullscreen');
-  $('engine').value=prefs.engine;$('homepage').value=prefs.homepage;$('theme').value=prefs.theme;if($('layout'))$('layout').value=prefs.layout;if($('animations'))$('animations').checked=prefs.animations;if($('streamQuality'))$('streamQuality').value=prefs.streamQuality||'auto';$('engine').onchange=e=>{prefs.engine=e.target.value;save()};$('homepage').onchange=e=>{prefs.homepage=e.target.value.trim();save()};$('theme').onchange=e=>{prefs.theme=e.target.value;save();render()};if($('layout'))$('layout').onchange=e=>{prefs.layout=e.target.value;save();render()};if($('animations'))$('animations').onchange=e=>{prefs.animations=e.target.checked;save();render()};if($('streamQuality'))$('streamQuality').onchange=e=>{prefs.streamQuality=e.target.value;save();const profile=applyStreamProfile();status('Stream profile: '+profile)};$('syncSignIn').onclick=signInToSync;$('syncSignOut').onclick=signOutOfSync;$('clearData').onclick=async()=>{if(confirm('Clear local preferences, recent sites, bookmarks, and the remote browser session?')){if(supabaseClient&&cloudUser){const cleared=await Promise.all([supabaseClient.from('browser2browse_bookmarks').delete().eq('user_id',cloudUser.id),supabaseClient.from('browser2browse_history').delete().eq('user_id',cloudUser.id)]);const failure=cleared.find(x=>x.error);if(failure)cloudStatus('Some XBT cloud history could not be cleared: '+failure.error.message)}localStorage.removeItem('b2b-settings');localStorage.removeItem('b2b-recent');localStorage.removeItem('b2b-bookmarks');bookmarks=[];if(session)await request('/api/sessions/'+session.id,undefined,'DELETE').catch(()=>{});if(socket)socket.onclose=null;socket?.close();socket=null;session=null;tabs=[];activeId=null;prefs={...defaults};save();render();renderBookmarks();connect()}};
+  $('engine').value=prefs.engine;$('homepage').value=prefs.homepage;$('theme').value=prefs.theme;if($('layout'))$('layout').value=prefs.layout;if($('animations'))$('animations').checked=prefs.animations;if($('streamQuality'))$('streamQuality').value=prefs.streamQuality||'auto';$('engine').onchange=e=>{prefs.engine=e.target.value;save()};$('homepage').onchange=e=>{prefs.homepage=e.target.value.trim();save()};$('theme').onchange=e=>{prefs.theme=e.target.value;save();render()};if($('layout'))$('layout').onchange=e=>{prefs.layout=e.target.value;save();render()};if($('animations'))$('animations').onchange=e=>{prefs.animations=e.target.checked;save();render()};if($('streamQuality'))$('streamQuality').onchange=e=>{prefs.streamQuality=e.target.value;save();const profile=applyStreamProfile();status('Stream profile: '+profile);updateConnectionProfile(profile)};$('syncSignIn').onclick=signInToSync;$('syncSignOut').onclick=signOutOfSync;$('clearData').onclick=async()=>{if(confirm('Clear local preferences, recent sites, bookmarks, and the remote browser session?')){if(supabaseClient&&cloudUser){const cleared=await Promise.all([supabaseClient.from('browser2browse_bookmarks').delete().eq('user_id',cloudUser.id),supabaseClient.from('browser2browse_history').delete().eq('user_id',cloudUser.id)]);const failure=cleared.find(x=>x.error);if(failure)cloudStatus('Some XBT cloud history could not be cleared: '+failure.error.message)}localStorage.removeItem('b2b-settings');localStorage.removeItem('b2b-recent');localStorage.removeItem('b2b-bookmarks');bookmarks=[];if(session)await request('/api/sessions/'+session.id,undefined,'DELETE').catch(()=>{});if(socket)socket.onclose=null;socket?.close();socket=null;session=null;tabs=[];activeId=null;prefs={...defaults};save();render();renderBookmarks();connect()}};
   $('clearHistory').onclick=()=>{try{localStorage.setItem('b2b-recent','[]')}catch{};if(supabaseClient&&cloudUser)supabaseClient.from('browser2browse_history').delete().eq('user_id',cloudUser.id).then(({error})=>{if(error)cloudStatus('Local history cleared; cloud history could not be cleared: '+error.message)});renderHome();$('historyList').innerHTML='<p class="empty-state">No recent sites yet.</p>';save();status('Recent sites cleared.')};
   $('clearSession').onclick=async()=>{if(session){await request('/api/sessions/'+session.id,undefined,'DELETE').catch(()=>{});session=null}socket?.close();socket=null;tabs=[];activeId=null;render();status('Remote session ended.');connect()};
   async function restoreClosedTab(){
