@@ -259,6 +259,10 @@ try {
   let uiSession = null;
   const pageErrors = [];
   const consoleErrors = [];
+  const uiApiFailures = [];
+  const uiRequestFailures = [];
+  const uiSocketEvents = [];
+  let uiPrimaryError = null;
   try {
     uiBrowser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
     uiPage = await uiBrowser.newPage({ viewport: { width: 1440, height: 1000 } });
@@ -267,9 +271,24 @@ try {
     uiPage.on('console', message => {
       if (message.type() === 'error') consoleErrors.push(message.text());
     });
+    uiPage.on('requestfailed', request => {
+      const u = new URL(request.url());
+      if (u.pathname.startsWith('/api/') || u.pathname === '/stream') {
+        uiRequestFailures.push({ path: u.pathname, error: request.failure()?.errorText || 'request failed' });
+      }
+    });
+    uiPage.on('websocket', socket => {
+      const path = new URL(socket.url()).pathname;
+      uiSocketEvents.push({ event: 'created', path });
+      socket.on('close', () => uiSocketEvents.push({ event: 'closed', path }));
+      socket.on('socketerror', error => uiSocketEvents.push({ event: 'error', path, error: String(error).slice(0, 140) }));
+    });
     uiPage.on('response', async response => {
       try {
         const u = new URL(response.url());
+        if (u.pathname.startsWith('/api/') && response.status() >= 400) {
+          uiApiFailures.push({ path: u.pathname, status: response.status() });
+        }
         if (u.pathname === '/api/sessions' && response.request().method() === 'POST' && response.ok()) {
           uiSession = await response.json();
         }
@@ -279,7 +298,18 @@ try {
     const homepage = await uiPage.goto(frontend + '/', { waitUntil: 'domcontentloaded', timeout: 30_000 });
     assert(homepage?.status() === 200, `Frontend homepage did not return HTTP 200: ${homepage?.status()}`);
     assert((await uiPage.title()).includes('Browse2Browse'), 'Frontend title was not rendered.');
-    await uiPage.waitForFunction(() => document.querySelector('#statusText')?.textContent.includes('Connected'), null, { timeout: 60_000 });
+    try {
+      await uiPage.waitForFunction(() => document.querySelector('#statusText')?.textContent.includes('Connected'), null, { timeout: 60_000 });
+    } catch (error) {
+      const diagnostics = await uiPage.evaluate(() => ({
+        status: document.querySelector('#statusText')?.textContent || '',
+        connection: document.querySelector('#connectionText')?.textContent || '',
+        api: window.B2B_CONFIG?.apiBase || '',
+        appScript: [...document.scripts].map(script => script.src).find(src => src.includes('app.js')) || '',
+        viewerVisible: !document.querySelector('#remoteView')?.hidden
+      })).catch(() => ({}));
+      throw new Error(`Frontend auto-connect timed out: ${JSON.stringify(diagnostics)}; sessionResponseSeen=${!!uiSession?.id}; API failures=${JSON.stringify(uiApiFailures)}; request failures=${JSON.stringify(uiRequestFailures)}; WebSocket events=${JSON.stringify(uiSocketEvents)}; page errors=${JSON.stringify(pageErrors)}; console errors=${JSON.stringify(consoleErrors)}; original=${String(error?.message || error)}`);
+    }
     const uiSessionDeadline = Date.now() + 5_000;
     while ((!uiSession?.id || !uiSession?.token) && Date.now() <= uiSessionDeadline) await sleep(50);
     assert(uiSession?.id && uiSession?.token, 'Frontend did not create an authenticated remote browser session.');
@@ -361,13 +391,23 @@ try {
     assert(pageErrors.length === 0, `Frontend JavaScript exceptions: ${pageErrors.join(' | ')}`);
     assert(consoleErrors.length === 0, `Frontend console errors: ${consoleErrors.join(' | ')}`);
     console.log('PASS frontend reports no JavaScript or console errors');
+  } catch (error) {
+    uiPrimaryError = error;
+    throw error;
   } finally {
     await uiBrowser?.close().catch(() => {});
     if (uiSession?.id && uiSession?.token) {
-      const uiClosed = await apiRequest(`/api/session/${uiSession.id}`, { method:'DELETE', token:uiSession.token, timeout:15_000 });
-      assert(uiClosed.response.ok && uiClosed.data.status === 'closed',
-        `Frontend-created session cleanup failed: HTTP ${uiClosed.response.status} ${uiClosed.raw}`);
-      console.log('PASS frontend-created browser session cleaned up');
+      try {
+        const uiClosed = await apiRequest(`/api/session/${uiSession.id}`, { method:'DELETE', token:uiSession.token, timeout:15_000 });
+        if (!uiClosed.response.ok || uiClosed.data.status !== 'closed') {
+          const detail = `Frontend-created session cleanup failed: HTTP ${uiClosed.response.status} ${uiClosed.raw}`;
+          if (uiPrimaryError) console.error('SECONDARY CLEANUP FAILURE: ' + detail);
+          else throw new Error(detail);
+        } else console.log('PASS frontend-created browser session cleaned up');
+      } catch (cleanupError) {
+        if (uiPrimaryError) console.error('SECONDARY CLEANUP FAILURE: ' + String(cleanupError?.message || cleanupError));
+        else throw cleanupError;
+      }
     }
   }
 
