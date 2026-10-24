@@ -65,7 +65,7 @@ async function waitForPublicServices() {
           fixture: fixture.status,
           backendHealth: health.status
         };
-        servicesReady = home.ok && homeText.includes('Browse2Browse Cloud') && homeText.includes('app.js?v=17')
+        servicesReady = home.ok && homeText.includes('Browse2Browse Cloud') && homeText.includes('app.js?v=18')
           && fixture.ok && fixtureText.includes('Remote Browser Test') && health.ok;
         if (!servicesReady) {
           await sleep(10_000);
@@ -395,6 +395,26 @@ try {
       `Fresh browser session showed a blank remote page instead of the welcome screen: ${JSON.stringify(startupSurface)}`);
     console.log('PASS fresh blank tab retains visible welcome and search screen');
 
+    const qualityOptions = await uiPage.locator('#streamQuality option').evaluateAll(options => options.map(option => option.value));
+    assert(['auto','smooth','balanced','sharp'].every(value => qualityOptions.includes(value)),
+      `Missing stream quality presets: ${JSON.stringify(qualityOptions)}`);
+    await uiPage.keyboard.press('Control+Shift+s');
+    await uiPage.waitForFunction(() => !document.querySelector('#settingsPanel')?.hidden);
+    const waitProfile = label => uiPage.waitForFunction(
+      expected => document.querySelector('#connectionText')?.textContent === expected,
+      label,{timeout:15_000}
+    );
+    await uiPage.locator('#streamQuality').selectOption('smooth');
+    await waitProfile('Live · Smooth · low-power');
+    await uiPage.locator('#streamQuality').selectOption('balanced');
+    await waitProfile('Live · Balanced');
+    await uiPage.locator('#streamQuality').selectOption('auto');
+    await uiPage.waitForFunction(() => /^Live · (Smooth · low-power|Balanced)$/.test(document.querySelector('#connectionText')?.textContent||''),null,{timeout:15_000});
+    await uiPage.keyboard.press('Escape');
+    await uiPage.waitForFunction(() => !!document.querySelector('#settingsPanel')?.hidden);
+    console.log('PASS Auto, Smooth and Balanced stream profiles change live without breaking the viewer');
+    console.log('PASS Ctrl+Shift+S opens Settings and Esc closes it');
+
     const waitAddress = async fragment => uiPage.waitForFunction(
       expected => document.querySelector('#address')?.value.includes(expected),
       fragment,
@@ -490,6 +510,13 @@ try {
     await clickRemoteAt(90, 88);
     await waitSessionUrl(uiSession.id, uiSession.token, '#interaction-b2b-ui-smoke');
     console.log('PASS frontend mouse and keyboard events control the remote page');
+
+    await uiPage.locator('#remoteView').click();
+    await uiPage.keyboard.press('Control+d');
+    await uiPage.waitForFunction(() => document.querySelector('#bookmark')?.textContent === '★');
+    await uiPage.keyboard.press('Control+d');
+    await uiPage.waitForFunction(() => document.querySelector('#bookmark')?.textContent === '☆');
+    console.log('PASS Ctrl+D toggles a bookmark without sending the shortcut to the remote page');
 
     const remoteCssWidth = await uiPage.locator('#viewport').evaluate(element => element.getBoundingClientRect().width);
     await clickRemoteAt(remoteCssWidth - 140, 38);
