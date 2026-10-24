@@ -193,7 +193,14 @@
               status('Connected to remote Chromium');setProgress(false);
               resizeRemoteViewport();resolve();
             }else if(m.type==='frame'){
-              if(m.tabId===activeId){view.src=`data:image/jpeg;base64,${m.data}`;view.hidden=false;$('newtab').hidden=true;$('message').hidden=true}
+              if(m.tabId===activeId){
+                // A fresh remote tab starts at about:blank. Keep the useful welcome page visible
+                // until the active tab has navigated to a real HTTP(S) page.
+                const current=active();
+                if(current?.url&&/^https?:\/\//i.test(current.url)){
+                  view.src=`data:image/jpeg;base64,${m.data}`;view.hidden=false;$('newtab').hidden=true;$('message').hidden=true;
+                }
+              }
             }else if(m.type==='state'){
               const t=tabs.find(t=>t.id===m.tabId);
               if(t){Object.assign(t,m);renderTabs();if(m.tabId===activeId){$('address').value=m.url||'';status(m.loading?'Loading page…':'Connected');setProgress(m.loading);updateBookmarkButton();if(!m.loading)save()}}
@@ -269,7 +276,7 @@
     });
   }
   function renderHome(){const recent=read('b2b-recent',[]).slice(0,6);$('newtab').innerHTML=`<div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 40 40"><rect x="3" y="4" width="29" height="24" rx="6" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M9 12h16M9 17h8M21 24l4 4 8-9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="9" r="1" fill="currentColor"/></svg></div><div class="brand-name">Browse2Browse</div><div class="brand-caption">A real Chromium browser, running remotely</div><form class="welcome-search" id="welcomeForm"><span class="search-icon">⌕</span><input id="welcomeInput" autocomplete="off" aria-label="Search or enter website address" placeholder="Search or enter a website address"><select id="welcomeEngine" class="engine-select" aria-label="Search engine"><option value="duckduckgo">DuckDuckGo</option><option value="google">Google</option><option value="bing">Bing</option><option value="brave">Brave</option><option value="yahoo">Yahoo</option></select></form><div class="section-label">RECENTLY VISITED</div><div class="recent-sites">${recent.length?recent.map((x,i)=>`<button class="site-shortcut" data-recent="${i}"><span class="site-icon">${esc((new URL(x.url).hostname[0]||'?').toUpperCase())}</span><span class="site-title">${esc(x.title||x.url)}</span><span class="site-url">${esc(new URL(x.url).hostname)}</span></button>`).join(''):'<div class="empty-recent">Recently visited websites will show up here.</div>'}</div><div class="newtab-bottom">Remote sessions are temporary and isolated · <strong>Made by Roy</strong></div>`;$('welcomeEngine').value=prefs.engine;$('welcomeEngine').onchange=e=>{prefs.engine=e.target.value;save()};$('welcomeForm').onsubmit=e=>{e.preventDefault();navigate($('welcomeInput').value)};$('newtab').querySelectorAll('[data-recent]').forEach(b=>b.onclick=()=>navigate(recent[+b.dataset.recent].url))}
-  function render(){renderTabs();const t=active();const empty=!t?.url;$('newtab').hidden=!empty;view.hidden=empty;$('message').hidden=true;if(empty)renderHome();document.documentElement.classList.toggle('dark',prefs.theme==='dark'||(prefs.theme==='system'&&matchMedia('(prefers-color-scheme: dark)').matches));document.documentElement.classList.toggle('no-motion',!prefs.animations);$('browser').classList.toggle('compact',prefs.layout==='compact')}
+  function render(){renderTabs();const t=active();const empty=!t?.url||!/^https?:\/\//i.test(t.url);$('newtab').hidden=!empty;view.hidden=empty;$('message').hidden=true;if(empty)renderHome();document.documentElement.classList.toggle('dark',prefs.theme==='dark'||(prefs.theme==='system'&&matchMedia('(prefers-color-scheme: dark)').matches));document.documentElement.classList.toggle('no-motion',!prefs.animations);$('browser').classList.toggle('compact',prefs.layout==='compact')}
   async function newTab(){
     if(!session){await connect();if(!session)return}
     try{
