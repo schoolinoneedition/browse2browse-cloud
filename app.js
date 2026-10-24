@@ -231,6 +231,7 @@
   }
   function wsUrl(){const u=new URL(api||location.origin);u.protocol=u.protocol==='https:'?'wss:':'ws:';u.pathname='/stream';u.search='';if(session?.id)u.searchParams.set('sessionId',session.id);return u.href}
   function send(obj){if(socket?.readyState===WebSocket.OPEN)socket.send(JSON.stringify(obj))}
+  function active(){return tabs.find(tab=>tab.id===activeId)||null}
   function renderTabs(){const strip=$('tabStrip');strip.replaceChildren();tabs.forEach(t=>{const b=document.createElement('button');b.className='tab'+(t.id===activeId?' active':'');b.draggable=true;b.role='tab';b.setAttribute('aria-selected',String(t.id===activeId));b.title=t.title||t.url||'New tab';b.innerHTML=`<span class="tab-favicon">${t.loading?'◌':'◉'}</span><span class="tab-label"></span><span class="tab-close" role="button" aria-label="Close tab" title="Close tab">×</span>`;b.querySelector('.tab-label').textContent=t.title||'New tab';b.onclick=e=>{if(e.target.closest('.tab-close'))closeTab(t.id);else activate(t.id)};b.ondragstart=()=>dragId=t.id;b.ondragover=e=>e.preventDefault();b.ondrop=e=>{e.preventDefault();reorder(dragId,t.id)};strip.append(b)});$('back').disabled=!active()?.canGoBack;$('forward').disabled=!active()?.canGoForward;$('stop').disabled=!active()?.loading;$('address').value=active()?.url||'';updateBookmarkButton();renderBookmarks()}
 
   function updateBookmarkButton(){
