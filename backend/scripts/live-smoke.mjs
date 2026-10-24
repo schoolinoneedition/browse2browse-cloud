@@ -434,6 +434,15 @@ try {
     await waitSessionUrl(uiSession.id, uiSession.token, '#interaction-b2b-ui-smoke');
     console.log('PASS frontend mouse and keyboard events control the remote page');
 
+    const remoteCssWidth = await uiPage.locator('#viewport').evaluate(element => element.getBoundingClientRect().width);
+    await clickRemoteAt(remoteCssWidth - 140, 38);
+    await sleep(250);
+    await uiPage.keyboard.type('b2b-edge');
+    await sleep(250);
+    await clickRemoteAt(remoteCssWidth - 90, 88);
+    await waitSessionUrl(uiSession.id, uiSession.token, '#edge-interaction-b2b-edge');
+    console.log('PASS right-edge mouse and keyboard mapping on a 1920px viewer');
+
     await clickRemoteAt(850, 500);
     await uiPage.mouse.wheel(0, 1000);
     await waitSessionUrl(uiSession.id, uiSession.token, '#scrolled-');
