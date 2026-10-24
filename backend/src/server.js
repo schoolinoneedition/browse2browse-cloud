@@ -13,6 +13,7 @@ const allowedOrigins = new Set((process.env.ALLOWED_ORIGINS || 'http://localhost
 const sessions = new Map();
 const rateBuckets = new Map();
 let browserPromise = null;
+let pendingSessionCreates = 0;
 const log = (event, data = {}) => console.log(JSON.stringify({ time: new Date().toISOString(), event, ...data }));
 const hashToken = value => crypto.createHash('sha256').update(value).digest();
 
@@ -250,35 +251,47 @@ async function startStream(session, tab) {
   await updateTab(tab);
 }
 async function createSession() {
-  if (sessions.size >= MAX_SESSIONS) throw Object.assign(new Error('The remote browser is at capacity. Close another session or try again later.'), { statusCode: 503 });
-  const browser = await ensureBrowser();
-  const token = crypto.randomBytes(32).toString('base64url');
-  const session = {
-    id: crypto.randomUUID(), tokenHash: hashToken(token), createdAt: Date.now(), lastSeen: Date.now(),
-    context: null, tabs: new Map(), peers: new Set(), activeTabId: null
-  };
-  session.context = await browser.newContext({ viewport: { width: 1280, height: 800 }, serviceWorkers: 'block', acceptDownloads: false });
-  session.context.setDefaultTimeout(15_000);
-  // Re-check every navigated request, including redirects and subresources, to reduce SSRF exposure.
-  await session.context.route('**/*', async route => {
-    const requested = route.request().url();
-    // Browser-generated resources such as data images and blob media are not network targets.
-    if (/^(about:|data:|blob:)/i.test(requested)) { await route.continue(); return; }
-    try { await validateUrl(requested); await route.continue(); }
-    catch { await route.abort('blockedbyclient').catch(() => {}); }
-  });
-  if (typeof session.context.routeWebSocket === 'function') {
-    await session.context.routeWebSocket('**/*', async route => {
-      try {
-        const checked = route.url().replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
-        await validateUrl(checked); await route.connect();
-      } catch { route.close({ code: 1008, reason: 'Blocked by network policy' }); }
-    });
+  if (sessions.size + pendingSessionCreates >= MAX_SESSIONS) {
+    throw Object.assign(new Error('The remote browser is at capacity. Close another session or try again later.'), { statusCode: 503 });
   }
-  const tab = await createTab(session);
-  session.activeTabId = tab.id;
-  sessions.set(session.id, session);
-  return { session, token, tab };
+  // Reserve capacity before awaiting browser startup so concurrent requests cannot overbook it.
+  pendingSessionCreates++;
+  let session = null;
+  try {
+    const browser = await ensureBrowser();
+    const token = crypto.randomBytes(32).toString('base64url');
+    session = {
+      id: crypto.randomUUID(), tokenHash: hashToken(token), createdAt: Date.now(), lastSeen: Date.now(),
+      context: null, tabs: new Map(), peers: new Set(), activeTabId: null
+    };
+    session.context = await browser.newContext({ viewport: { width: 1280, height: 800 }, serviceWorkers: 'block', acceptDownloads: false });
+    session.context.setDefaultTimeout(15_000);
+    // Re-check every network request, including redirects and subresources, to reduce SSRF exposure.
+    await session.context.route('**/*', async route => {
+      const requested = route.request().url();
+      // Browser-generated resources such as data images and blob media are not network targets.
+      if (/^(about:|data:|blob:)/i.test(requested)) { await route.continue(); return; }
+      try { await validateUrl(requested); await route.continue(); }
+      catch { await route.abort('blockedbyclient').catch(() => {}); }
+    });
+    if (typeof session.context.routeWebSocket === 'function') {
+      await session.context.routeWebSocket('**/*', async route => {
+        try {
+          const checked = route.url().replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
+          await validateUrl(checked); await route.connect();
+        } catch { route.close({ code: 1008, reason: 'Blocked by network policy' }); }
+      });
+    }
+    const tab = await createTab(session);
+    session.activeTabId = tab.id;
+    sessions.set(session.id, session);
+    return { session, token, tab };
+  } catch (error) {
+    await session?.context?.close().catch(() => {});
+    throw error;
+  } finally {
+    pendingSessionCreates--;
+  }
 }
 async function closeSession(session, reason = 'Session closed') {
   sessions.delete(session.id);
@@ -302,6 +315,12 @@ async function handleHttp(req, res) {
     if (url.pathname === '/api/sessions' && req.method === 'POST') {
       await readBody(req);
       const created = await createSession();
+      // A frontend may give up waiting during a cold start. Never keep an invisible
+      // session that consumes the only session slot when its response can't be delivered.
+      if (res.destroyed || res.writableEnded) {
+        await closeSession(created.session, 'Client disconnected during browser startup');
+        return;
+      }
       log('session_created', { sessionId: created.session.id });
       return json(res, 201, { id: created.session.id, token: created.token, activeTabId: created.tab.id, tabs: [snapshot(created.tab)] });
     }
