@@ -270,7 +270,22 @@
   }
   function renderHome(){const recent=read('b2b-recent',[]).slice(0,6);$('newtab').innerHTML=`<div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 40 40"><rect x="3" y="4" width="29" height="24" rx="6" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M9 12h16M9 17h8M21 24l4 4 8-9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="9" r="1" fill="currentColor"/></svg></div><div class="brand-name">Browse2Browse</div><div class="brand-caption">A real Chromium browser, running remotely</div><form class="welcome-search" id="welcomeForm"><span class="search-icon">⌕</span><input id="welcomeInput" autocomplete="off" aria-label="Search or enter website address" placeholder="Search or enter a website address"><select id="welcomeEngine" class="engine-select" aria-label="Search engine"><option value="duckduckgo">DuckDuckGo</option><option value="google">Google</option><option value="bing">Bing</option><option value="brave">Brave</option><option value="yahoo">Yahoo</option></select></form><div class="section-label">RECENTLY VISITED</div><div class="recent-sites">${recent.length?recent.map((x,i)=>`<button class="site-shortcut" data-recent="${i}"><span class="site-icon">${esc((new URL(x.url).hostname[0]||'?').toUpperCase())}</span><span class="site-title">${esc(x.title||x.url)}</span><span class="site-url">${esc(new URL(x.url).hostname)}</span></button>`).join(''):'<div class="empty-recent">Recently visited websites will show up here.</div>'}</div><div class="newtab-bottom">Remote sessions are temporary and isolated · <strong>Made by Roy</strong></div>`;$('welcomeEngine').value=prefs.engine;$('welcomeEngine').onchange=e=>{prefs.engine=e.target.value;save()};$('welcomeForm').onsubmit=e=>{e.preventDefault();navigate($('welcomeInput').value)};$('newtab').querySelectorAll('[data-recent]').forEach(b=>b.onclick=()=>navigate(recent[+b.dataset.recent].url))}
   function render(){renderTabs();const t=active();const empty=!t?.url;$('newtab').hidden=!empty;view.hidden=empty;$('message').hidden=true;if(empty)renderHome();document.documentElement.classList.toggle('dark',prefs.theme==='dark'||(prefs.theme==='system'&&matchMedia('(prefers-color-scheme: dark)').matches));document.documentElement.classList.toggle('no-motion',!prefs.animations);$('browser').classList.toggle('compact',prefs.layout==='compact')}
-  async function newTab(){if(!session){await connect();if(!session)return}try{const x=await request('/api/tabs',{url:''});tabs.push(x.tab);activeId=x.tab.id;send({type:'activate',tabId:activeId});render()}catch(e){statusError(e)}}
+  async function newTab(){
+    if(!session){await connect();if(!session)return}
+    try{
+      const created=await request('/api/tabs',{url:''});
+      const state=await request('/api/tabs',undefined,'GET');
+      tabs=Array.isArray(state.tabs)?state.tabs:[created.tab];
+      activeId=state.activeTabId||created.tab.id;
+      send({type:'activate',tabId:activeId});
+      render();
+      resizeRemoteViewport();
+    }catch(error){
+      if(shouldRecoverBrowser(error)){
+        try{await recoverSession('')}catch(recoveryError){statusError(recoveryError)}
+      }else statusError(error);
+    }
+  }
   async function activate(id){activeId=id;send({type:'activate',tabId:id});render();setProgress(!!active()?.loading);resizeRemoteViewport()}
   function shouldRecoverBrowser(error){
     return error?.status===401 || error?.status===502 ||
@@ -333,7 +348,24 @@
     }
   }
   function showRemoteError(msg){$('message').hidden=false;view.hidden=true;$('newtab').hidden=true;$('message').innerHTML=`<div class="message-card"><div class="message-symbol">!</div><h2>Couldn’t load this page</h2><p>${esc(msg)}</p><div class="message-actions"><button class="primary-button" id="retryPage">Try again</button><button class="secondary-button" id="newTabFromError">New tab</button></div></div>`;$('retryPage').onclick=()=>navigate($('address').value);$('newTabFromError').onclick=newTab;setProgress(false)}
-  async function closeTab(id){if(tabs.length<=1){try{await request(`/api/tabs/${encodeURIComponent(id)}`)}catch{}tabs=[];activeId=null;await newTab();return}try{await request(`/api/tabs/${encodeURIComponent(id)}`)}catch(e){status(e.message)}tabs=tabs.filter(t=>t.id!==id);if(activeId===id){activeId=tabs[Math.max(0,tabs.length-1)].id;send({type:'activate',tabId:activeId})}render()}
+  async function closeTab(id){
+    if(!id||!session)return;
+    const previousUrl=active()?.url||'';
+    try{
+      // The backend owns tab state. Close remotely first, then mirror its actual list.
+      await request(`/api/tabs/${encodeURIComponent(id)}`,undefined,'DELETE');
+      const state=await request('/api/tabs',undefined,'GET');
+      tabs=Array.isArray(state.tabs)?state.tabs:[];
+      activeId=state.activeTabId||tabs[0]?.id||null;
+      if(activeId)send({type:'activate',tabId:activeId});
+      render();
+      resizeRemoteViewport();
+    }catch(error){
+      if(shouldRecoverBrowser(error)){
+        try{await recoverSession(previousUrl)}catch(recoveryError){showRemoteError(recoveryError.message||error.message)}
+      }else statusError(error);
+    }
+  }
   async function go(action){
     const currentUrl=active()?.url||'';
     try{await request(`/api/tabs/${encodeURIComponent(activeId)}/${action}`,{})}
@@ -347,11 +379,10 @@
   function mapPointer(e){
     const rect=view.getBoundingClientRect(),naturalWidth=view.naturalWidth||rect.width,naturalHeight=view.naturalHeight||rect.height;
     if(!rect.width||!rect.height||!naturalWidth||!naturalHeight)return null;
-    const scale=Math.min(rect.width/naturalWidth,rect.height/naturalHeight);
-    const renderedWidth=naturalWidth*scale,renderedHeight=naturalHeight*scale;
-    const offsetX=(rect.width-renderedWidth)/2,offsetY=(rect.height-renderedHeight)/2;
-    const x=(e.clientX-rect.left-offsetX)/scale,y=(e.clientY-rect.top-offsetY)/scale;
-    return {x:Math.max(0,Math.min(naturalWidth-1,x)),y:Math.max(0,Math.min(naturalHeight-1,y)),inside:x>=0&&y>=0&&x<naturalWidth&&y<naturalHeight};
+    // The image is stretched to fill the viewport, so scale X and Y independently.
+    const x=(e.clientX-rect.left)*naturalWidth/rect.width;
+    const y=(e.clientY-rect.top)*naturalHeight/rect.height;
+    return {x:Math.max(0,Math.min(naturalWidth-1,x)),y:Math.max(0,Math.min(naturalHeight-1,y)),inside:x>=0&&y>=0&&x<rect.width*naturalWidth/rect.width&&y<rect.height*naturalHeight/rect.height};
   }
   function inputFromPointer(e,type){
     if(!activeId)return;
