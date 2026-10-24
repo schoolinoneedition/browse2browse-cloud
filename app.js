@@ -260,6 +260,7 @@
                     }
                   });
                 }
+              }
             }else if(m.type==='state'){
               const t=tabs.find(t=>t.id===m.tabId);
               if(t){Object.assign(t,m);renderTabs();if(m.tabId===activeId){$('address').value=m.url||'';status(m.loading?'Loading page…':'Connected');setProgress(m.loading);updateBookmarkButton();if(!m.loading)save()}}
@@ -279,7 +280,7 @@
               session=null;retryCount=0;status('Session expired — starting a fresh browser…');retryTimer=setTimeout(connect,500);
             }else if(api&&retryCount<6){
               retryCount++;
-              status('Connection interrupted — retry '+retryCount+' of 4…');
+              status('Connection interrupted — retry '+retryCount+' of 6…');
               retryTimer=setTimeout(connect,Math.min(1_000*2**Math.max(0,retryCount-1),12_000));
             }else statusError(Error('Connection lost after automatic retries. Check the backend service and try again.'));
           };
@@ -288,7 +289,7 @@
         if(!api){statusError(e);return}
         if(retryCount<6){
           retryCount++;
-          status('Cloud browser is waking up — retry '+retryCount+' of 4…');
+          status('Cloud browser is waking up — retry '+retryCount+' of 6…');
           setProgress(true);
           retryTimer=setTimeout(connect,Math.min(1_000*2**Math.max(0,retryCount-1),12_000));
         }else statusError(e);
