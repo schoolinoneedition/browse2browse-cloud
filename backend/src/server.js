@@ -84,7 +84,7 @@ async function ensureBrowser() {
           log('browser_launch_failed', { strategy: attempt.label, error: detail });
         }
       }
-      throw new Error(`Unable to start Chromium after ${attempts.length} launch strategies. ${failures.join(' | ')}`);
+      throw Object.assign(new Error(`Unable to start Chromium after ${attempts.length} launch strategies. ${failures.join(' | ')}`), { statusCode: 503 });
     })().catch(error => {
       browserPromise = null;
       throw error;
@@ -429,23 +429,46 @@ wss.on('connection', (ws, req) => {
         await tab.page.setViewportSize({ width, height }).catch(() => {}); return;
       }
       const cdp = tab.cdp;
-      if (!cdp) return;
       if (message.type === 'input') {
         const x = Math.max(0, Math.round(Number(message.x) || 0));
         const y = Math.max(0, Math.round(Number(message.y) || 0));
-        if (message.event === 'wheel') await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: Number(message.deltaX) || 0, deltaY: Number(message.deltaY) || 0 });
-        else if (['mouseMoved', 'mousePressed', 'mouseReleased'].includes(message.event)) await cdp.send('Input.dispatchMouseEvent', { type: message.event, x, y, button: message.button === 2 ? 'right' : message.button === 1 ? 'middle' : 'left', clickCount: 1 });
+        const button = message.button === 2 ? 'right' : message.button === 1 ? 'middle' : 'left';
+        if (cdp) {
+          if (message.event === 'wheel') await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: Number(message.deltaX) || 0, deltaY: Number(message.deltaY) || 0 });
+          else if (['mouseMoved', 'mousePressed', 'mouseReleased'].includes(message.event)) await cdp.send('Input.dispatchMouseEvent', { type: message.event, x, y, button, clickCount: 1 });
+        } else {
+          if (message.event === 'wheel') await tab.page.mouse.wheel(Number(message.deltaX) || 0, Number(message.deltaY) || 0);
+          else if (message.event === 'mouseMoved') await tab.page.mouse.move(x, y);
+          else if (message.event === 'mousePressed') await tab.page.mouse.down({ button });
+          else if (message.event === 'mouseReleased') await tab.page.mouse.up({ button });
+        }
       } else if (message.type === 'key') {
         const key = String(message.key || '').slice(0, 40), code = String(message.code || '').slice(0, 40);
         const modifiersData = message.modifiers || {};
         const modifiers = (modifiersData.alt ? 1 : 0) | (modifiersData.ctrl ? 2 : 0) | (modifiersData.meta ? 4 : 0) | (modifiersData.shift ? 8 : 0);
-        if (!modifiers && key.length === 1 && !['Enter', 'Tab'].includes(key)) await cdp.send('Input.insertText', { text: key });
-        else {
-          await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, modifiers });
-          await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, modifiers });
+        if (cdp) {
+          if (!modifiers && key.length === 1 && !['Enter', 'Tab'].includes(key)) await cdp.send('Input.insertText', { text: key });
+          else {
+            await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, modifiers });
+            await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, modifiers });
+          }
+        } else {
+          const modifierKeys = [];
+          if (modifiersData.ctrl) modifierKeys.push('Control');
+          if (modifiersData.alt) modifierKeys.push('Alt');
+          if (modifiersData.shift) modifierKeys.push('Shift');
+          if (modifiersData.meta) modifierKeys.push('Meta');
+          if (!modifierKeys.length && key.length === 1 && !['Enter', 'Tab'].includes(key)) await tab.page.keyboard.insertText(key);
+          else {
+            for (const modifier of modifierKeys) await tab.page.keyboard.down(modifier);
+            await tab.page.keyboard.press(key);
+            for (const modifier of modifierKeys.reverse()) await tab.page.keyboard.up(modifier);
+          }
         }
       } else if (message.type === 'type') {
-        await cdp.send('Input.insertText', { text: String(message.text || '').slice(0, 1000) });
+        const text = String(message.text || '').slice(0, 1000);
+        if (cdp) await cdp.send('Input.insertText', { text });
+        else await tab.page.keyboard.insertText(text);
       }
     } catch (error) { log('ws_input_error', { error: String(error.message || error).slice(0, 160) }); }
   });
