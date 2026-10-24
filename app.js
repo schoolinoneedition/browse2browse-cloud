@@ -210,20 +210,20 @@
             }
             if(session&&(e.code===4401||e.code===4408)){
               session=null;retryCount=0;status('Session expired — starting a fresh browser…');retryTimer=setTimeout(connect,500);
-            }else if(api&&retryCount<12){
+            }else if(api&&retryCount<4){
               retryCount++;
-              status('Connection interrupted — retry '+retryCount+' of 12…');
-              retryTimer=setTimeout(connect,Math.min(1_200*2**Math.max(0,retryCount-1),10_000));
+              status('Connection interrupted — retry '+retryCount+' of 4…');
+              retryTimer=setTimeout(connect,Math.min(1_000*2**Math.max(0,retryCount-1),8_000));
             }else statusError(Error('Connection lost after automatic retries. Check the backend service and try again.'));
           };
         });
       }catch(e){
         if(!api){statusError(e);return}
-        if(retryCount<12){
+        if(retryCount<4){
           retryCount++;
-          status('Cloud browser is waking up — retry '+retryCount+' of 12…');
+          status('Cloud browser is waking up — retry '+retryCount+' of 4…');
           setProgress(true);
-          retryTimer=setTimeout(connect,Math.min(1_200*2**Math.max(0,retryCount-1),10_000));
+          retryTimer=setTimeout(connect,Math.min(1_000*2**Math.max(0,retryCount-1),8_000));
         }else statusError(e);
       }
     })();
