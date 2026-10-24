@@ -276,7 +276,8 @@ try {
     const navigateFromUI = async url => {
       await uiPage.locator('#address').fill(url);
       await uiPage.locator('#addressForm').press('Enter');
-      await waitAddress(new URL(url).pathname.split('/').pop() || new URL(url).hostname);
+      const parsed = new URL(url);
+      await waitSessionUrl(uiSession.id, uiSession.token, parsed.pathname.split('/').pop() || parsed.hostname);
       await waitViewerFrame();
     };
     const clickRemoteAt = async (remoteX, remoteY) => {
@@ -300,36 +301,40 @@ try {
     await uiPage.keyboard.type('b2b-ui-smoke');
     await sleep(250);
     await clickRemoteAt(90, 88);
-    await waitAddress('#interaction-b2b-ui-smoke');
+    await waitSessionUrl(uiSession.id, uiSession.token, '#interaction-b2b-ui-smoke');
     console.log('PASS frontend mouse and keyboard events control the remote page');
 
     await clickRemoteAt(850, 500);
     await uiPage.mouse.wheel(0, 1000);
-    await waitAddress('#scrolled-');
+    await waitSessionUrl(uiSession.id, uiSession.token, '#scrolled-');
     console.log('PASS frontend scrolling changes the remote page');
 
     await navigateFromUI('https://example.com/');
     await uiPage.locator('#back').click();
-    await waitAddress('#scrolled-');
+    await waitSessionUrl(uiSession.id, uiSession.token, '#scrolled-');
+    const forwardRequest = uiPage.waitForRequest(request => new URL(request.url()).pathname.endsWith('/forward') && request.method() === 'POST');
     await uiPage.locator('#forward').click();
-    await waitAddress('example.com');
+    await forwardRequest;
+    await waitSessionUrl(uiSession.id, uiSession.token, 'example.com');
+    const reloadRequest = uiPage.waitForRequest(request => new URL(request.url()).pathname.endsWith('/reload') && request.method() === 'POST');
     await uiPage.locator('#reload').click();
-    await waitAddress('example.com');
+    await reloadRequest;
+    await waitSessionUrl(uiSession.id, uiSession.token, 'example.com');
     await waitViewerFrame();
     console.log('PASS frontend back, forward and reload controls');
 
     // Return to the fixture, open a second tab using the UI and close it again.
     await uiPage.locator('#back').click();
-    await waitAddress('smoke-fixture.html');
+    await waitSessionUrl(uiSession.id, uiSession.token, 'smoke-fixture.html');
     const priorTabs = await uiPage.locator('#tabStrip .tab').count();
     await uiPage.locator('#newTab').click();
     await uiPage.waitForFunction(count => document.querySelectorAll('#tabStrip .tab').length === count + 1, priorTabs);
     await uiPage.locator('#address').fill('https://example.com/');
     await uiPage.locator('#addressForm').press('Enter');
-    await waitAddress('example.com');
+    await waitSessionUrl(uiSession.id, uiSession.token, 'example.com');
     await uiPage.locator('#tabStrip .tab.active .tab-close').click();
     await uiPage.waitForFunction(count => document.querySelectorAll('#tabStrip .tab').length === count, priorTabs);
-    await waitAddress('smoke-fixture.html');
+    await waitSessionUrl(uiSession.id, uiSession.token, 'smoke-fixture.html');
     console.log('PASS frontend new-tab and close-tab controls');
 
     assert(pageErrors.length === 0, `Frontend JavaScript exceptions: ${pageErrors.join(' | ')}`);
