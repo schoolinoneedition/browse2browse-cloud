@@ -104,8 +104,9 @@ async function navigate(id, token, tabId, url) {
   assert(result.response.ok, `Navigation failed for ${url}: HTTP ${result.response.status} ${result.raw}`);
   const expected = new URL(url).href;
   await waitMessage(m => m.type === 'state' && m.tabId === tabId && m.url === expected, start, 25_000, `navigation state ${expected}`);
-  const frameStart = events.length;
-  const frame = await waitMessage(m => m.type === 'frame' && m.tabId === tabId && typeof m.data === 'string' && m.data.length > 1000, frameStart, 25_000, `live frame for ${expected}`);
+  // Frames may arrive before the HTTP navigation request returns; use the
+  // cursor captured before navigation so the test never misses a valid keyframe.
+  const frame = await waitMessage(m => m.type === 'frame' && m.tabId === tabId && typeof m.data === 'string' && m.data.length > 1000, start, 25_000, `live frame for ${expected}`);
   const bytes = Buffer.from(frame.data, 'base64');
   assert(bytes.length > 1000 && bytes[0] === 0xff && bytes[1] === 0xd8, `Viewer did not deliver a JPEG browser frame for ${expected}`);
   return result.data;
