@@ -65,7 +65,7 @@ async function waitForPublicServices() {
           fixture: fixture.status,
           backendHealth: health.status
         };
-        servicesReady = home.ok && homeText.includes('Browse2Browse Cloud') && homeText.includes('app.js?v=14')
+        servicesReady = home.ok && homeText.includes('Browse2Browse Cloud') && homeText.includes('app.js?v=15')
           && fixture.ok && fixtureText.includes('Remote Browser Test') && health.ok;
         if (!servicesReady) {
           await sleep(10_000);
