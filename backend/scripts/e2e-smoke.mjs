@@ -81,7 +81,7 @@ async function waitSessionUrl(base, id, token, suffix, timeout = timeoutMs) {
       const tab = (last.tabs || []).find(t => t.id === last.activeTabId);
       if (tab?.url?.includes(suffix)) return { session: last, tab };
     }
-    await sleep(100);
+    await sleep(200);
   }
   throw new Error(`Remote tab did not reach URL fragment ${suffix}. Last session state: ${JSON.stringify(last)}`);
 }
